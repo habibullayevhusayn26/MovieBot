@@ -2,6 +2,7 @@ require('dotenv').config();
 const config = require('./config');
 process.env.TZ = config.timezone;
 const mongoose = require('mongoose');
+const mongoUri = config.mongoUri;
 
 const mongoConnection = mongoose.connect(mongoUri, {
   serverSelectionTimeoutMS: 10000
