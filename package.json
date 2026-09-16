@@ -1,8 +1,8 @@
 {
-  "name": "telegram-channel-post-bot",
+  "name": "telegram-movie-bot",
   "version": "1.0.0",
   "private": true,
-  "description": "Telegram bot for managing channel posts with inline URL buttons",
+  "description": "Telegram movie bot for finding films by code",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
