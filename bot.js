@@ -50,7 +50,6 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
-const ADMIN_PUBLIC_USERNAME = config.admin.publicUsername;
 const data = { settings: { requiredChannels: [], movieChannel: null } };
 
 function isAdmin(ctx) {
@@ -70,7 +69,8 @@ function adminKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📊 Statistika', 'admin:stats')],
     [Markup.button.callback('🎬 Kino joylash', 'admin:add_movie')],
-    [Markup.button.callback('📣 Kino reklama kanalini qo\'shish', 'admin:movie_channel')],
+    [Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')],
+    [Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie')],
     [Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')],
     [Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list')],
     [Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')]
@@ -170,14 +170,14 @@ async function ensureUser(ctx) {
   ).lean();
 }
 
-function movieCaption(movie, views) {
+function movieCaption(movie, views, includeViews = true) {
+  const viewsLine = includeViews ? `👁 Ko'rilgan: ${views} marta\n` : '';
   return `🎬 <b>${movie.title}</b>\n\n` +
     `🔢 Kino kodi: <code>${movie.code}</code>\n` +
     `🎭 Janri: ${movie.genre}\n` +
     `🌐 Tili: ${movie.language}\n` +
-    `👁 Ko'rilgan: ${views} marta\n` +
-    `🤖 Bot: @${config.botUsername}\n` +
-    `📣 Reklama: ${ADMIN_PUBLIC_USERNAME}`;
+    viewsLine +
+    `🤖 Bot: @${config.botUsername}`;
 }
 
 function movieLink(code) {
@@ -206,7 +206,7 @@ async function sendMovie(ctx, code) {
 async function sendMovieAdvertisement(movie) {
   const channel = data.settings.movieChannel;
   const extra = {
-    caption: movieCaption(movie, 0),
+    caption: movieCaption(movie, 0, false),
     parse_mode: 'HTML',
     reply_markup: Markup.inlineKeyboard([[Markup.button.url('🎬 Kinoni ko\'rish', movieLink(movie.code))]]).reply_markup
   };
@@ -221,6 +221,34 @@ async function adminStats(ctx) {
     Movie.aggregate([{ $group: { _id: null, total: { $sum: '$views' } } }])
   ]);
   return ctx.reply(`📊 Bot statistikasi\n\n👥 Obunachilar: ${subscribers}\n🎬 Joylangan kinolar: ${movies}\n👁 Umumiy ko'rilgan kinolar: ${views[0]?.total || 0}`, adminKeyboard());
+}
+
+function movieAdminKeyboard(code) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Ma\'lumotlarni o\'zgartirish', `admin:edit_movie:${code}`)],
+    [Markup.button.callback('🗑 Kinoni o\'chirish', `admin:delete_movie:${code}`)],
+    [Markup.button.callback('⬅️ Admin panel', 'admin:panel')]
+  ]);
+}
+
+function movieAdminText(movie) {
+  return `🎬 ${movie.title}\n\n` +
+    `Kino kodi: ${movie.code}\n` +
+    `Janri: ${movie.genre}\n` +
+    `Tili: ${movie.language}\n` +
+    `Ko'rilgan: ${movie.views || 0} marta`;
+}
+
+function movieEditKeyboard(code) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🎬 Nomini o\'zgartirish', `admin:edit_field:title:${code}`)],
+    [Markup.button.callback('🔢 Kodini o\'zgartirish', `admin:edit_field:code:${code}`)],
+    [Markup.button.callback('🎭 Janrini o\'zgartirish', `admin:edit_field:genre:${code}`)],
+    [Markup.button.callback('🌐 Tilini o\'zgartirish', `admin:edit_field:language:${code}`)],
+    [Markup.button.callback('🎞 Videosini o\'zgartirish', `admin:edit_field:video:${code}`)],
+    [Markup.button.callback('🖼 Reklama media sini o\'zgartirish', `admin:edit_field:promo:${code}`)],
+    [Markup.button.callback('⬅️ Orqaga', `admin:movie:${code}`)]
+  ]);
 }
 
 async function handleStart(ctx) {
@@ -255,6 +283,72 @@ bot.action('admin:stats', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   return adminStats(ctx);
+});
+
+bot.action('admin:panel', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  reset(ctx);
+  return ctx.reply('🛠 Admin panel', adminKeyboard());
+});
+
+bot.action('admin:find_movie', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  ctx.session = { step: 'find_movie' };
+  return ctx.reply('Tahrirlash yoki o\'chirish uchun kino kodini yuboring:');
+});
+
+bot.action(/^admin:movie:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
+});
+
+bot.action(/^admin:edit_movie:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  return ctx.reply('Qaysi ma\'lumotni o\'zgartirasiz?', movieEditKeyboard(movie.code));
+});
+
+bot.action(/^admin:edit_field:(title|code|genre|language|video|promo):(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const [, field, code] = ctx.match;
+  if (!await Movie.exists({ code })) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  ctx.session = { step: `edit_movie_${field}`, movieCode: code };
+  const prompts = {
+    title: 'Yangi kino nomini yuboring:',
+    code: 'Yangi kino kodini yuboring:',
+    genre: 'Yangi kino janrini yuboring:',
+    language: 'Yangi kino tilini yuboring:',
+    video: 'Yangi kino videosini yuboring:',
+    promo: 'Yangi reklama videosi yoki rasmini yuboring:'
+  };
+  return ctx.reply(prompts[field]);
+});
+
+bot.action(/^admin:delete_movie:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  return ctx.reply(`🗑 ${movie.title} filmini o\'chirishni tasdiqlaysizmi?`, Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Ha, o\'chirish', `admin:delete_confirm:${movie.code}`)],
+    [Markup.button.callback('❌ Bekor qilish', `admin:movie:${movie.code}`)]
+  ]));
+});
+
+bot.action(/^admin:delete_confirm:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const result = await Movie.deleteOne({ code: ctx.match[1] });
+  reset(ctx);
+  return ctx.reply(result.deletedCount ? '✅ Kino o\'chirildi.' : 'Kino topilmadi.', adminKeyboard());
 });
 
 bot.action('admin:movie_channel', async (ctx) => {
@@ -297,6 +391,25 @@ bot.action('admin:add_movie', async (ctx) => {
 
 bot.on('video', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Kino kodini yuboring.');
+  if (ctx.session?.step === 'edit_movie_video') {
+    const movie = await Movie.findOneAndUpdate(
+      { code: ctx.session.movieCode },
+      { $set: { videoFileId: ctx.message.video.file_id } },
+      { new: true }
+    ).lean();
+    reset(ctx);
+    return ctx.reply(movie ? '✅ Kino videosi yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
+  }
+  if (ctx.session?.step === 'edit_movie_promo') {
+    const movie = await Movie.findOneAndUpdate(
+      { code: ctx.session.movieCode },
+      { $set: { promoFileId: ctx.message.video.file_id, promoType: 'video' } },
+      { new: true }
+    ).lean();
+    if (movie) await sendMovieAdvertisement(movie);
+    reset(ctx);
+    return ctx.reply(movie ? '✅ Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
+  }
   if (ctx.session?.step === 'movie_video') {
     ctx.session.movie.videoFileId = ctx.message.video.file_id;
     ctx.session.step = 'movie_promo';
@@ -311,6 +424,16 @@ bot.on('video', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
+  if (isAdmin(ctx) && ctx.session?.step === 'edit_movie_promo') {
+    const movie = await Movie.findOneAndUpdate(
+      { code: ctx.session.movieCode },
+      { $set: { promoFileId: ctx.message.photo.at(-1).file_id, promoType: 'photo' } },
+      { new: true }
+    ).lean();
+    if (movie) await sendMovieAdvertisement(movie);
+    reset(ctx);
+    return ctx.reply(movie ? '✅ Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
+  }
   if (!isAdmin(ctx) || ctx.session?.step !== 'movie_promo') return ctx.reply('Kino kodini yuboring.');
   ctx.session.movie.promoFileId = ctx.message.photo.at(-1).file_id;
   ctx.session.movie.promoType = 'photo';
@@ -327,6 +450,27 @@ async function finishMovieCreation(ctx) {
 bot.on('text', async (ctx) => {
   const value = ctx.message.text.trim();
   const step = ctx.session?.step;
+  if (step === 'find_movie') {
+    if (!/^\d+$/.test(value)) return ctx.reply('Kino kodi faqat raqamlardan iborat bo\'lishi kerak:');
+    const movie = await Movie.findOne({ code: value }).lean();
+    if (!movie) return ctx.reply('Kino topilmadi. Boshqa kod yuboring:', adminKeyboard());
+    reset(ctx);
+    return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
+  }
+  if (/^edit_movie_(title|code|genre|language)$/.test(step || '')) {
+    const field = step.slice('edit_movie_'.length);
+    if (field === 'code') {
+      if (!/^\d+$/.test(value)) return ctx.reply('Kino kodi faqat raqam bo\'lishi kerak:');
+      if (value !== ctx.session.movieCode && await Movie.exists({ code: value })) return ctx.reply('Bu kino kodi band. Boshqa kod yuboring:');
+    }
+    const movie = await Movie.findOneAndUpdate(
+      { code: ctx.session.movieCode },
+      { $set: { [field]: value } },
+      { new: true }
+    ).lean();
+    reset(ctx);
+    return ctx.reply(movie ? '✅ Kino ma\'lumoti yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
+  }
   if (step === 'movie_channel') {
     try {
       data.settings.movieChannel = await checkFullAdmin(ctx, normalizeChannel(value));
