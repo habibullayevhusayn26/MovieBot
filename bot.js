@@ -3,11 +3,6 @@ const config = require('./config');
 process.env.TZ = config.timezone;
 const mongoose = require('mongoose');
 
-const mongoUri = config.mongoUri;
-if (!mongoUri) {
-  throw new Error('MONGODB_URI is missing. Add the MongoDB Atlas connection string to .env.');
-}
-
 const mongoConnection = mongoose.connect(mongoUri, {
   serverSelectionTimeoutMS: 10000
 });
@@ -433,39 +428,18 @@ function isAdmin(ctx) {
 }
 
 function mainKeyboard(ctx) {
-  const keyboard = [
-    [tr(ctx, 'channels'), tr(ctx, 'addChannel')],
-    ['📊 Post statistikasi'],
-    ['👤 Profilim', '💎 Premium']
-  ];
-  if (isAdmin(ctx)) keyboard.push([tr(ctx, 'admin')]);
-  keyboard.push([tr(ctx, 'settings')]);
-  return Markup.keyboard(keyboard).resize();
+  if (isAdmin(ctx)) return Markup.keyboard([[tr(ctx, 'admin')]]).resize();
+  return Markup.removeKeyboard();
 }
 
 function adminKeyboard(ctx) {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback(localizeReply(ctx, '📊 Statistika'), 'admin:stats'),
-      Markup.button.callback(localizeReply(ctx, '📣 Barchaga post yuborish'), 'admin:broadcast')
-    ],
-    [
-      Markup.button.callback('💳 Premium to\'lov sozlamalari', 'admin:premium_settings'),
-    ],
     [Markup.button.callback(localizeReply(ctx, '📢 Majburiy obunani sozlash'), 'admin:subscription')],
     [Markup.button.callback(localizeReply(ctx, '📋 Majburiy obuna kanallar ro\'yxati'), 'admin:required_list')],
     [Markup.button.callback(localizeReply(ctx, '❌ Majburiy obunani o\'chirish'), 'admin:subscription_off')],
     [Markup.button.callback('🔍 Userni qidirish', 'admin:user_search')]
   ]);
 }
-
-function adminUserSearchResultKeyboard(personalId) {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('✉️ Userga xabar yuborish', `admin:message_user:${personalId}`)],
-    [Markup.button.callback('⬅️ Orqaga', 'admin:user_search')]
-  ]);
-}
-
 function subscriptionKeyboard(ctx, channels) {
   const requiredChannels = Array.isArray(channels) ? channels : [channels];
   return Markup.inlineKeyboard([
@@ -639,26 +613,12 @@ function channelActions(ctx, channelId) {
 }
 
 function composerKeyboard(ctx) {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback(localizeReply(ctx, '🔗 Havolali tugma qo\'shish'), 'add_button')],
-    [Markup.button.callback('💾 Shablon sifatida saqlash', 'save_template')],
-    [Markup.button.callback('📂 Shablonlarim', 'templates')],
-    [Markup.button.callback(localizeReply(ctx, '👀 Preview'), 'preview')],
-    [Markup.button.callback(localizeReply(ctx, '❌ Bekor qilish'), 'cancel')]
-  ]);
+  return Markup.removeKeyboard();
 }
 
 function templateKeyboard(templates) {
   return Markup.inlineKeyboard([
     ...templates.map((template) => [Markup.button.callback(`📄 ${template.name}`, `template:${template.id}`)]),
-    [Markup.button.callback('⬅️ Postga qaytish', 'templates_back')]
-  ]);
-}
-
-function confirmationKeyboard(ctx) {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback(localizeReply(ctx, '✅ Tasdiqlash'), 'publish')],
-    [Markup.button.callback(localizeReply(ctx, '❌ Bekor qilish'), 'cancel')]
   ]);
 }
 
@@ -875,7 +835,7 @@ async function handleStart(ctx) {
   reset(ctx);
   if (!(await requiredSubscription(ctx))) return;
   if (!account.language) return ctx.reply(tr(ctx, 'welcome'), languageKeyboard());
-  return ctx.reply('<tg-emoji emoji-id="5454380420336466255">✋</tg-emoji> Assalomu alaykum! Kanal postlarini boshqarish botiga xush kelibsiz.', {
+  return ctx.reply('<tg-emoji emoji-id="5454380420336466255">✋</tg-emoji> Assalomu alaykum! Kino botiga xush kelibsiz. Kino kodini yuboring.', {
     parse_mode: 'HTML',
     reply_markup: mainKeyboard(ctx)
   });
@@ -1035,6 +995,29 @@ bot.use(async (ctx, next) => {
   if (await requiredSubscription(ctx)) {
     return next();
   }
+});
+
+// Legacy post and premium flows are disabled while the bot is being converted to a movie bot.
+bot.use(async (ctx, next) => {
+  const callbackData = ctx.callbackQuery?.data || '';
+  const blockedCallback = /^(?:admin:(?:stats|broadcast|premium_.*|back)|channels|add_channel|compose.*|multi_channel.*|multi_channels_done|channel:.*|remove:.*|no_photo|no_caption|add_button|save_template|templates.*|template:.*|button_.*|preview|publish|cancel|premium:.*)$/.test(callbackData);
+  const blockedCommand = /^\/(?:channels|profile|premium|settings)\b/i.test(ctx.message?.text || '');
+  const blockedText = [
+    ...Object.values(text.createPost),
+    ...Object.values(text.videoSave),
+    ...Object.values(text.channels),
+    ...Object.values(text.addChannel),
+    '📊 Post statistikasi', '👤 Profilim', '💎 Premium'
+  ].includes(ctx.message?.text);
+  const blockedSession = /^(?:media_url|channel|photo|broadcast_photo|broadcast_caption|caption|buttons|button_text|button_url|button_color|multi_channel_select|premium_payment_photo|admin_premium_)/.test(ctx.session?.step || '');
+  const hasMedia = Boolean(ctx.message?.photo || ctx.message?.video || ctx.message?.animation || ctx.message?.document);
+
+  if (blockedCallback || blockedCommand || blockedText || blockedSession || hasMedia) {
+    if (ctx.callbackQuery) await safeAnswerCbQuery(ctx);
+    if (ctx.reply) await ctx.reply('Bu funksiya o\'chirildi. Kino kodi yuborish funksiyasi tez orada qo\'shiladi.');
+    return;
+  }
+  return next();
 });
 
 bot.start(async (ctx) => {
@@ -1716,7 +1699,7 @@ bot.catch((error, ctx) => {
 
 async function setupBotAbout() {
   try {
-    const aboutText = `🇺🇿 Kanallar uchun tugmali postlar yaratish boti. <tg-emoji emoji-id="50849744836855078101">💜</tg-emoji>\n🇷🇺 Бот для создания постов с кнопками для каналов. <tg-emoji emoji-id="5285430309720966085">🔥</tg-emoji>\nAdmin: ${ADMIN_PUBLIC_USERNAME}`;
+    const aboutText = `🇺🇿 Kino kodi orqali video yuboruvchi bot. <tg-emoji emoji-id="50849744836855078101">💜</tg-emoji>\n🇷🇺 Бот отправки фильмов по коду. <tg-emoji emoji-id="5285430309720966085">🔥</tg-emoji>\nAdmin: ${ADMIN_PUBLIC_USERNAME}`;
     await bot.telegram.setMyShortDescription(aboutText);
     console.log("🚀 Botning 'About' qismi premium emojilar bilan muvaffaqiyatli yangilandi!");
   } catch (error) {
