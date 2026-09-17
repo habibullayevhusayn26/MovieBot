@@ -51,6 +51,18 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const data = { settings: { requiredChannels: [], movieChannel: null } };
+const defaultMessages = {
+  welcome: 'Assalomu alaykum {nickname}\n\n@{bot_username} orqali siz o\'zingizga yoqqan kinoni topishingiz mumkin\nShunchaki kino kodini yuboring va kinoni oling',
+  subscriptionRequired: 'Botdan foydalanish uchun quyidagi kanallarga obuna bo\'ling',
+  invalidCode: 'Kino kodi xato. Boshqa kino kodini yuboring.',
+  nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.'
+};
+const messageLabels = {
+  welcome: 'Start salomlashuv xabari',
+  subscriptionRequired: 'Majburiy obuna xabari',
+  invalidCode: 'Xato kino kodi xabari',
+  nonNumericCode: 'Raqam bo\'lmagan kod xabari'
+};
 
 function isAdmin(ctx) {
   return ctx.from?.username?.toLowerCase() === ADMIN_USERNAME;
@@ -71,6 +83,7 @@ function adminKeyboard() {
     [Markup.button.callback('Kino joylash', 'admin:add_movie')],
     [Markup.button.callback('Kino reklama kanalini sozlash', 'admin:movie_channel')],
     [Markup.button.callback('Kino kodini qidirish', 'admin:find_movie')],
+    [Markup.button.callback('Xabarlarni sozlash', 'admin:messages')],
     [Markup.button.callback('Majburiy obuna kanalini qo\'shish', 'admin:subscription')],
     [Markup.button.callback('Majburiy obuna kanallari', 'admin:required_list')],
     [Markup.button.callback('Majburiy obunani o\'chirish', 'admin:subscription_off')]
@@ -81,11 +94,25 @@ function userKeyboard(ctx) {
   return isAdmin(ctx) ? Markup.keyboard([['Admin panel']]).resize() : Markup.removeKeyboard();
 }
 
-function welcomeMessage(ctx) {
+function formatMessage(template, ctx, values = {}) {
   const nickname = ctx.from?.first_name || ctx.from?.username || 'foydalanuvchi';
-  return `Assalomu alaykum ${nickname}\n\n` +
-    `@${config.botUsername} orqali siz o'zingizga yoqqan kinoni topishingiz mumkin\n` +
-    `Shunchaki kino kodini yuboring va kinoni oling`;
+  return String(template).replace(/\{(nickname|bot_username|code)\}/g, (match, key) => ({
+    nickname,
+    bot_username: config.botUsername,
+    code: values.code || ''
+  }[key] ?? match));
+}
+
+function configuredMessage(key, ctx, values = {}) {
+  return formatMessage(data.settings.messages?.[key] || defaultMessages[key], ctx, values);
+}
+
+function replyOptions(replyMarkup) {
+  return replyMarkup ? { parse_mode: 'HTML', reply_markup: replyMarkup } : { parse_mode: 'HTML' };
+}
+
+function welcomeMessage(ctx) {
+  return configuredMessage('welcome', ctx);
 }
 
 function welcomeMarkup() {
@@ -127,7 +154,7 @@ async function requiredSubscription(ctx) {
   }
 
   if (!notSubscribed.length) return true;
-  await ctx.reply('Botdan foydalanish uchun quyidagi kanallarga obuna bo\'ling', subscriptionKeyboard(notSubscribed));
+  await ctx.reply(configuredMessage('subscriptionRequired', ctx), replyOptions(subscriptionKeyboard(notSubscribed).reply_markup));
   return false;
 }
 
@@ -153,7 +180,7 @@ async function checkFullAdmin(ctx, username) {
 async function saveSettings() {
   await BotConfig.findOneAndUpdate(
     { configKey: 'main_config' },
-    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel } } },
+    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, messages: data.settings.messages } } },
     { upsert: true }
   );
 }
@@ -167,6 +194,7 @@ async function hydrateSettings() {
   }
   data.settings.requiredChannels = configDocument.channels || [];
   data.settings.movieChannel = configDocument.settings?.movieChannel || null;
+  data.settings.messages = { ...defaultMessages, ...(configDocument.settings?.messages || {}) };
 }
 
 async function ensureUser(ctx) {
@@ -199,7 +227,7 @@ async function sendMovie(ctx, code) {
     { $inc: { views: 1 } },
     { returnDocument: 'after' }
   ).lean();
-  if (!movie) return ctx.reply('Kino kodi xato. Boshqa kino kodini yuboring.');
+  if (!movie) return ctx.reply(configuredMessage('invalidCode', ctx, { code: normalizedCode }), replyOptions());
   const channel = data.settings.movieChannel;
   const buttonRows = channel?.username
     ? [[Markup.button.url('Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
@@ -259,12 +287,19 @@ function movieEditKeyboard(code) {
   ]);
 }
 
+function messagesKeyboard() {
+  return Markup.inlineKeyboard([
+    ...Object.entries(messageLabels).map(([key, label]) => [Markup.button.callback(label, `admin:edit_message:${key}`)]),
+    [Markup.button.callback('Admin panel', 'admin:panel')]
+  ]);
+}
+
 async function handleStart(ctx) {
   await ensureUser(ctx);
   if (!(await requiredSubscription(ctx))) return;
   const payload = ctx.startPayload || '';
   if (payload.startsWith('movie_')) return sendMovie(ctx, payload.slice(6));
-  return ctx.reply(welcomeMessage(ctx), { reply_markup: welcomeMarkup() || userKeyboard(ctx).reply_markup });
+  return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup() || userKeyboard(ctx).reply_markup));
 }
 
 bot.use(session());
@@ -279,7 +314,7 @@ bot.use(async (ctx, next) => {
 
 bot.action('check_subscription', async (ctx) => {
   await ctx.answerCbQuery();
-  if (await requiredSubscription(ctx)) return ctx.reply(welcomeMessage(ctx), { reply_markup: welcomeMarkup() || userKeyboard(ctx).reply_markup });
+  if (await requiredSubscription(ctx)) return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup() || userKeyboard(ctx).reply_markup));
 });
 
 bot.hears('Admin panel', (ctx) => {
@@ -305,6 +340,20 @@ bot.action('admin:find_movie', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   ctx.session = { step: 'find_movie' };
   return ctx.reply('Tahrirlash yoki o\'chirish uchun kino kodini yuboring:');
+});
+
+bot.action('admin:messages', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  return ctx.reply('O\'zgartirmoqchi bo\'lgan xabarni tanlang. HTML va premium emoji teglaridan foydalanishingiz mumkin.', messagesKeyboard());
+});
+
+bot.action(/^admin:edit_message:(welcome|subscriptionRequired|invalidCode|nonNumericCode)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  const key = ctx.match[1];
+  ctx.session = { step: 'message_edit', messageKey: key };
+  return ctx.reply(`${messageLabels[key]} uchun yangi matn yuboring. Placeholderlar: {nickname}, {bot_username}, {code}.`);
 });
 
 bot.action(/^admin:movie:(\d+)$/, async (ctx) => {
@@ -458,8 +507,17 @@ async function finishMovieCreation(ctx) {
 bot.on('text', async (ctx) => {
   const value = ctx.message.text.trim();
   const step = ctx.session?.step;
+  if (step === 'message_edit') {
+    if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+    const key = ctx.session.messageKey;
+    if (!messageLabels[key]) return ctx.reply('Xabar topilmadi.', adminKeyboard());
+    data.settings.messages[key] = value;
+    await saveSettings();
+    reset(ctx);
+    return ctx.reply('Xabar saqlandi.', messagesKeyboard());
+  }
   if (step === 'find_movie') {
-    if (!/^\d+$/.test(value)) return ctx.reply('Kino kodi faqat raqamlardan iborat bo\'lishi kerak:');
+    if (!/^\d+$/.test(value)) return ctx.reply(configuredMessage('nonNumericCode', ctx, { code: value }), replyOptions());
     const movie = await Movie.findOne({ code: value }).lean();
     if (!movie) return ctx.reply('Kino topilmadi. Boshqa kod yuboring:', adminKeyboard());
     reset(ctx);
@@ -523,7 +581,7 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Kino videosini yuboring:');
   }
   if (/^\d+$/.test(value)) return sendMovie(ctx, value);
-  return ctx.reply('Kino kodi xato. Raqamli kino kodini yuboring.');
+  return ctx.reply(configuredMessage('invalidCode', ctx, { code: value }), replyOptions());
 });
 
 bot.catch((error, ctx) => {
