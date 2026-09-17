@@ -50,6 +50,7 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
+const ADMIN_TG_ID = config.admin.telegramId;
 const data = { settings: { requiredChannels: [], movieChannel: null } };
 const defaultMessages = {
   welcome: 'Assalomu alaykum {nickname}\n\n@{bot_username} orqali siz o\'zingizga yoqqan kinoni topishingiz mumkin\nShunchaki kino kodini yuboring va kinoni oling',
@@ -63,9 +64,13 @@ const messageLabels = {
   invalidCode: 'Xato kino kodi xabari',
   nonNumericCode: 'Raqam bo\'lmagan kod xabari'
 };
+const legacyButtonLabels = new Set([
+  '📨 Post yuborish', '🎬 Video saqlash', '📢 Kanallar ro\'yxati', '➕ Kanal qo\'shish',
+  '📊 Post statistikasi', '👤 Profilim', '💎 Premium', 'Sozlamalar', '🛠 Admin panel'
+]);
 
 function isAdmin(ctx) {
-  return ctx.from?.username?.toLowerCase() === ADMIN_USERNAME;
+  return Number(ctx.from?.id) === ADMIN_TG_ID || ctx.from?.username?.toLowerCase() === ADMIN_USERNAME;
 }
 
 function reset(ctx) {
@@ -303,6 +308,12 @@ async function handleStart(ctx) {
 }
 
 bot.use(session());
+
+bot.use(async (ctx, next) => {
+  if (ctx.chat && ctx.chat.type !== 'private') return;
+  return next();
+});
+
 bot.start(handleStart);
 
 bot.use(async (ctx, next) => {
@@ -317,7 +328,7 @@ bot.action('check_subscription', async (ctx) => {
   if (await requiredSubscription(ctx)) return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup() || userKeyboard(ctx).reply_markup));
 });
 
-bot.hears('Admin panel', (ctx) => {
+bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   return ctx.reply('Admin panel', adminKeyboard());
 });
@@ -406,6 +417,12 @@ bot.action(/^admin:delete_confirm:(\d+)$/, async (ctx) => {
   const result = await Movie.deleteOne({ code: ctx.match[1] });
   reset(ctx);
   return ctx.reply(result.deletedCount ? 'Kino o\'chirildi.' : 'Kino topilmadi.', adminKeyboard());
+});
+
+bot.on('callback_query', async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  reset(ctx);
+  return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni qayta tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
 });
 
 bot.action('admin:movie_channel', async (ctx) => {
@@ -507,6 +524,19 @@ async function finishMovieCreation(ctx) {
 bot.on('text', async (ctx) => {
   const value = ctx.message.text.trim();
   const step = ctx.session?.step;
+  if (value.startsWith('/')) {
+    reset(ctx);
+    return ctx.reply(isAdmin(ctx) ? 'Bu command mavjud emas. Admin paneldan foydalaning.' : 'Bu command mavjud emas. Kino kodini yuboring.');
+  }
+  if (/^(?:Admin panel|🛠 Admin panel)$/.test(value)) {
+    if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+    reset(ctx);
+    return ctx.reply('Admin panel', adminKeyboard());
+  }
+  if (legacyButtonLabels.has(value)) {
+    reset(ctx);
+    return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
+  }
   if (step === 'message_edit') {
     if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
     const key = ctx.session.messageKey;
