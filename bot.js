@@ -166,7 +166,7 @@ async function ensureUser(ctx) {
   return User.findOneAndUpdate(
     { telegramId },
     { $set: { username: ctx.from.username || '', nickname: ctx.from.first_name || ctx.from.last_name || '' }, $setOnInsert: { telegramId, joinedAt: new Date() } },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   ).lean();
 }
 
@@ -189,7 +189,7 @@ async function sendMovie(ctx, code) {
   const movie = await Movie.findOneAndUpdate(
     { code: normalizedCode },
     { $inc: { views: 1 } },
-    { new: true }
+    { returnDocument: 'after' }
   ).lean();
   if (!movie) return ctx.reply('❌ Kino kodi xato. Boshqa kino kodini yuboring.');
   const channel = data.settings.movieChannel;
@@ -395,7 +395,7 @@ bot.on('video', async (ctx) => {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
       { $set: { videoFileId: ctx.message.video.file_id } },
-      { new: true }
+      { returnDocument: 'after' }
     ).lean();
     reset(ctx);
     return ctx.reply(movie ? '✅ Kino videosi yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
@@ -404,7 +404,7 @@ bot.on('video', async (ctx) => {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
       { $set: { promoFileId: ctx.message.video.file_id, promoType: 'video' } },
-      { new: true }
+      { returnDocument: 'after' }
     ).lean();
     if (movie) await sendMovieAdvertisement(movie);
     reset(ctx);
@@ -428,7 +428,7 @@ bot.on('photo', async (ctx) => {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
       { $set: { promoFileId: ctx.message.photo.at(-1).file_id, promoType: 'photo' } },
-      { new: true }
+      { returnDocument: 'after' }
     ).lean();
     if (movie) await sendMovieAdvertisement(movie);
     reset(ctx);
@@ -466,7 +466,7 @@ bot.on('text', async (ctx) => {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
       { $set: { [field]: value } },
-      { new: true }
+      { returnDocument: 'after' }
     ).lean();
     reset(ctx);
     return ctx.reply(movie ? '✅ Kino ma\'lumoti yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
