@@ -58,12 +58,6 @@ const defaultMessages = {
   invalidCode: 'Kino kodi xato. Boshqa kino kodini yuboring.',
   nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.'
 };
-const messageLabels = {
-  welcome: 'Start salomlashuv xabari',
-  subscriptionRequired: 'Majburiy obuna xabari',
-  invalidCode: 'Xato kino kodi xabari',
-  nonNumericCode: 'Raqam bo\'lmagan kod xabari'
-};
 const legacyButtonLabels = new Set([
   '📨 Post yuborish', '🎬 Video saqlash', '📢 Kanallar ro\'yxati', '➕ Kanal qo\'shish',
   '📊 Post statistikasi', '👤 Profilim', '💎 Premium', 'Sozlamalar', '🛠 Admin panel'
@@ -82,16 +76,25 @@ function normalizeChannel(value) {
   return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
 }
 
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function adminKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Statistika', 'admin:stats')],
-    [Markup.button.callback('Kino joylash', 'admin:add_movie')],
-    [Markup.button.callback('Kino reklama kanalini sozlash', 'admin:movie_channel')],
-    [Markup.button.callback('Kino kodini qidirish', 'admin:find_movie')],
-    [Markup.button.callback('Xabarlarni sozlash', 'admin:messages')],
-    [Markup.button.callback('Majburiy obuna kanalini qo\'shish', 'admin:subscription')],
-    [Markup.button.callback('Majburiy obuna kanallari', 'admin:required_list')],
-    [Markup.button.callback('Majburiy obunani o\'chirish', 'admin:subscription_off')]
+    [Markup.button.callback('📊 Statistika', 'admin:stats')],
+    [Markup.button.callback('🎬 Kino joylash', 'admin:add_movie')],
+    [Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast')],
+    [Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')],
+    [Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie')],
+    [Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')],
+    [Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list')],
+    [Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')]
   ]);
 }
 
@@ -255,6 +258,61 @@ async function sendMovieAdvertisement(movie) {
   return bot.telegram.sendVideo(channel.id, movie.promoFileId, extra);
 }
 
+function broadcastKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('Rasmsiz davom etish', 'broadcast:no_media')],
+    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+  ]);
+}
+
+function broadcastButtonKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('Yana tugma qo\'shish', 'broadcast:add_button')],
+    [Markup.button.callback('Yuborish', 'broadcast:send')],
+    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+  ]);
+}
+
+function broadcastColorKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('Ko\'k', 'broadcast:color:blue'), Markup.button.callback('Yashil', 'broadcast:color:green')],
+    [Markup.button.callback('Qizil', 'broadcast:color:red')]
+  ]);
+}
+
+async function sendBroadcast(ctx) {
+  const broadcast = ctx.session?.broadcast;
+  if (!broadcast) return ctx.reply('Xabar yuborish jarayoni topilmadi.');
+  const users = await User.find({}, { telegramId: 1 }).lean();
+  const replyMarkup = broadcast.buttons?.length
+    ? Markup.inlineKeyboard(broadcast.buttons).reply_markup
+    : undefined;
+  const extra = {
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    parse_mode: 'HTML'
+  };
+  let sent = 0;
+  for (const user of users) {
+    try {
+      const chat = await bot.telegram.getChat(user.telegramId);
+      if (chat.type !== 'private') continue;
+      if (broadcast.mediaType === 'photo') {
+        await bot.telegram.sendPhoto(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+      } else if (broadcast.mediaType === 'video') {
+        await bot.telegram.sendVideo(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+      } else if (broadcast.mediaType === 'animation') {
+        await bot.telegram.sendAnimation(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+      } else {
+        await bot.telegram.sendMessage(user.telegramId, broadcast.caption || ' ', extra);
+      }
+      sent += 1;
+    } catch (error) {
+      console.error(`Broadcast to ${user.telegramId} failed:`, error.response?.description || error.message);
+    }
+  }
+  return sent;
+}
+
 async function adminStats(ctx) {
   const [subscribers, movies, views] = await Promise.all([
     User.countDocuments(),
@@ -289,13 +347,6 @@ function movieEditKeyboard(code) {
     [Markup.button.callback('Videosini o\'zgartirish', `admin:edit_field:video:${code}`)],
     [Markup.button.callback('Reklama mediasini o\'zgartirish', `admin:edit_field:promo:${code}`)],
     [Markup.button.callback('Orqaga', `admin:movie:${code}`)]
-  ]);
-}
-
-function messagesKeyboard() {
-  return Markup.inlineKeyboard([
-    ...Object.entries(messageLabels).map(([key, label]) => [Markup.button.callback(label, `admin:edit_message:${key}`)]),
-    [Markup.button.callback('Admin panel', 'admin:panel')]
   ]);
 }
 
@@ -353,18 +404,53 @@ bot.action('admin:find_movie', async (ctx) => {
   return ctx.reply('Tahrirlash yoki o\'chirish uchun kino kodini yuboring:');
 });
 
-bot.action('admin:messages', async (ctx) => {
+bot.action('admin:broadcast', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  return ctx.reply('O\'zgartirmoqchi bo\'lgan xabarni tanlang. HTML va premium emoji teglaridan foydalanishingiz mumkin.', messagesKeyboard());
+  ctx.session = { step: 'broadcast_media', broadcast: { buttons: [] } };
+  return ctx.reply('Xabar uchun rasm, video yoki GIF yuboring. Media shart emas:', broadcastKeyboard());
 });
 
-bot.action(/^admin:edit_message:(welcome|subscriptionRequired|invalidCode|nonNumericCode)$/, async (ctx) => {
+bot.action('broadcast:no_media', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  const key = ctx.match[1];
-  ctx.session = { step: 'message_edit', messageKey: key };
-  return ctx.reply(`${messageLabels[key]} uchun yangi matn yuboring. Placeholderlar: {nickname}, {bot_username}, {code}.`);
+  if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_media') return ctx.reply('Broadcast jarayoni topilmadi.');
+  ctx.session.step = 'broadcast_caption';
+  return ctx.reply('Xabar matnini yuboring. Premium emoji uchun HTML teglaridan foydalanishingiz mumkin:');
+});
+
+bot.action('broadcast:add_button', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_buttons') return ctx.reply('Avval xabar matnini kiriting.');
+  ctx.session.step = 'broadcast_button_text';
+  return ctx.reply('Inline tugma matnini yuboring:');
+});
+
+bot.action(/^broadcast:color:(blue|green|red)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_button_color') return ctx.reply('Tugma rangi tanlash bosqichi topilmadi.');
+  const colorPrefix = { blue: '🔵', green: '🟢', red: '🔴' }[ctx.match[1]];
+  ctx.session.broadcast.buttons.push([{
+    text: `${colorPrefix} ${ctx.session.pendingButtonText}`,
+    url: ctx.session.pendingButtonUrl
+  }]);
+  ctx.session.pendingButtonText = undefined;
+  ctx.session.pendingButtonUrl = undefined;
+  ctx.session.step = 'broadcast_buttons';
+  return ctx.reply('Tugma qo\'shildi. Yana tugma qo\'shasizmi?', broadcastButtonKeyboard());
+});
+
+bot.action('broadcast:send', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx) || !ctx.session?.broadcast) return ctx.reply('Broadcast jarayoni topilmadi.');
+  const sent = await sendBroadcast(ctx);
+  reset(ctx);
+  return ctx.reply(`Xabar ${sent} ta obunachiga yuborildi.`, adminKeyboard());
+});
+
+bot.action('broadcast:cancel', async (ctx) => {
+  await ctx.answerCbQuery();
+  reset(ctx);
+  return ctx.reply('Xabar yuborish bekor qilindi.', adminKeyboard());
 });
 
 bot.action(/^admin:movie:(\d+)$/, async (ctx) => {
@@ -465,6 +551,12 @@ bot.action('admin:add_movie', async (ctx) => {
 
 bot.on('video', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Kino kodini yuboring.');
+  if (ctx.session?.step === 'broadcast_media') {
+    ctx.session.broadcast.mediaType = 'video';
+    ctx.session.broadcast.media = ctx.message.video.file_id;
+    ctx.session.step = 'broadcast_caption';
+    return ctx.reply('Media uchun izoh yuboring:');
+  }
   if (ctx.session?.step === 'edit_movie_video') {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
@@ -498,6 +590,12 @@ bot.on('video', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
+  if (isAdmin(ctx) && ctx.session?.step === 'broadcast_media') {
+    ctx.session.broadcast.mediaType = 'photo';
+    ctx.session.broadcast.media = ctx.message.photo.at(-1).file_id;
+    ctx.session.step = 'broadcast_caption';
+    return ctx.reply('Media uchun izoh yuboring:');
+  }
   if (isAdmin(ctx) && ctx.session?.step === 'edit_movie_promo') {
     const movie = await Movie.findOneAndUpdate(
       { code: ctx.session.movieCode },
@@ -512,6 +610,14 @@ bot.on('photo', async (ctx) => {
   ctx.session.movie.promoFileId = ctx.message.photo.at(-1).file_id;
   ctx.session.movie.promoType = 'photo';
   return finishMovieCreation(ctx);
+});
+
+bot.on('animation', async (ctx) => {
+  if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_media') return ctx.reply('Kino kodini yuboring.');
+  ctx.session.broadcast.mediaType = 'animation';
+  ctx.session.broadcast.media = ctx.message.animation.file_id;
+  ctx.session.step = 'broadcast_caption';
+  return ctx.reply('Media uchun izoh yuboring:');
 });
 
 async function finishMovieCreation(ctx) {
@@ -533,18 +639,25 @@ bot.on('text', async (ctx) => {
     reset(ctx);
     return ctx.reply('Admin panel', adminKeyboard());
   }
+  if (step === 'broadcast_caption') {
+    ctx.session.broadcast.caption = value;
+    ctx.session.step = 'broadcast_buttons';
+    return ctx.reply('Inline tugma qo\'shasizmi?', broadcastButtonKeyboard());
+  }
+  if (step === 'broadcast_button_text') {
+    ctx.session.pendingButtonText = value;
+    ctx.session.step = 'broadcast_button_url';
+    return ctx.reply('Tugma havolasini yuboring (https://...):');
+  }
+  if (step === 'broadcast_button_url') {
+    if (!isHttpUrl(value)) return ctx.reply('Havola http:// yoki https:// bilan boshlanishi kerak. Qayta yuboring:');
+    ctx.session.pendingButtonUrl = value;
+    ctx.session.step = 'broadcast_button_color';
+    return ctx.reply('Tugma rangini tanlang:', broadcastColorKeyboard());
+  }
   if (legacyButtonLabels.has(value)) {
     reset(ctx);
     return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
-  }
-  if (step === 'message_edit') {
-    if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-    const key = ctx.session.messageKey;
-    if (!messageLabels[key]) return ctx.reply('Xabar topilmadi.', adminKeyboard());
-    data.settings.messages[key] = value;
-    await saveSettings();
-    reset(ctx);
-    return ctx.reply('Xabar saqlandi.', messagesKeyboard());
   }
   if (step === 'find_movie') {
     if (!/^\d+$/.test(value)) return ctx.reply(configuredMessage('nonNumericCode', ctx, { code: value }), replyOptions());
