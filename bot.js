@@ -287,9 +287,18 @@ async function sendBroadcast(ctx) {
   const replyMarkup = broadcast.buttons?.length
     ? Markup.inlineKeyboard(broadcast.buttons).reply_markup
     : undefined;
-  const extra = {
-    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    parse_mode: 'HTML'
+  const commonExtra = replyMarkup ? { reply_markup: replyMarkup } : {};
+  const textExtra = {
+    ...commonExtra,
+    ...(broadcast.captionEntities?.length
+      ? { entities: broadcast.captionEntities }
+      : { parse_mode: 'HTML' })
+  };
+  const mediaExtra = {
+    ...commonExtra,
+    ...(broadcast.captionEntities?.length
+      ? { caption_entities: broadcast.captionEntities }
+      : { parse_mode: 'HTML' })
   };
   let sent = 0;
   for (const user of users) {
@@ -297,13 +306,22 @@ async function sendBroadcast(ctx) {
       const chat = await bot.telegram.getChat(user.telegramId);
       if (chat.type !== 'private') continue;
       if (broadcast.mediaType === 'photo') {
-        await bot.telegram.sendPhoto(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+        await bot.telegram.sendPhoto(user.telegramId, broadcast.media, {
+          ...mediaExtra,
+          caption: broadcast.caption || undefined
+        });
       } else if (broadcast.mediaType === 'video') {
-        await bot.telegram.sendVideo(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+        await bot.telegram.sendVideo(user.telegramId, broadcast.media, {
+          ...mediaExtra,
+          caption: broadcast.caption || undefined
+        });
       } else if (broadcast.mediaType === 'animation') {
-        await bot.telegram.sendAnimation(user.telegramId, broadcast.media, { ...extra, caption: broadcast.caption || undefined });
+        await bot.telegram.sendAnimation(user.telegramId, broadcast.media, {
+          ...mediaExtra,
+          caption: broadcast.caption || undefined
+        });
       } else {
-        await bot.telegram.sendMessage(user.telegramId, broadcast.caption || ' ', extra);
+        await bot.telegram.sendMessage(user.telegramId, broadcast.caption || ' ', textExtra);
       }
       sent += 1;
     } catch (error) {
@@ -428,10 +446,11 @@ bot.action('broadcast:add_button', async (ctx) => {
 bot.action(/^broadcast:color:(blue|green|red)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_button_color') return ctx.reply('Tugma rangi tanlash bosqichi topilmadi.');
-  const colorPrefix = { blue: '🔵', green: '🟢', red: '🔴' }[ctx.match[1]];
+  const style = { blue: 'primary', green: 'success', red: 'danger' }[ctx.match[1]];
   ctx.session.broadcast.buttons.push([{
-    text: `${colorPrefix} ${ctx.session.pendingButtonText}`,
-    url: ctx.session.pendingButtonUrl
+    text: ctx.session.pendingButtonText,
+    url: ctx.session.pendingButtonUrl,
+    style
   }]);
   ctx.session.pendingButtonText = undefined;
   ctx.session.pendingButtonUrl = undefined;
@@ -628,7 +647,8 @@ async function finishMovieCreation(ctx) {
 }
 
 bot.on('text', async (ctx) => {
-  const value = ctx.message.text.trim();
+  const rawText = ctx.message.text;
+  const value = rawText.trim();
   const step = ctx.session?.step;
   if (value.startsWith('/')) {
     reset(ctx);
@@ -640,7 +660,8 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Admin panel', adminKeyboard());
   }
   if (step === 'broadcast_caption') {
-    ctx.session.broadcast.caption = value;
+    ctx.session.broadcast.caption = rawText;
+    ctx.session.broadcast.captionEntities = ctx.message.entities || [];
     ctx.session.step = 'broadcast_buttons';
     return ctx.reply('Inline tugma qo\'shasizmi?', broadcastButtonKeyboard());
   }
