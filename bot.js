@@ -855,8 +855,10 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Kino kodini yuboring (masalan: 1001):');
   }
   if (step === 'movie_code') {
-    if (!/^\d+$/.test(value)) return ctx.reply('Kod faqat raqamlardan iborat bo\'lishi kerak. Qayta yuboring:');
-    if (await Movie.exists({ code: value })) return ctx.reply('Bu kino kodi band. Boshqa kod yuboring:');
+    if (!/^\d+$/.test(value)) {
+      return ctx.reply('⚠️ Kino kodi faqat raqamlardan iborat bo\'lishi kerak. Masalan: 1001. Qayta yuboring:');
+    }
+    if (await Movie.exists({ code: value })) return ctx.reply('⚠️ Bu kino kodi band. Boshqa kod yuboring:');
     ctx.session.movie.code = value;
     ctx.session.step = 'movie_genre';
     return ctx.reply('Kino janrini yuboring:');
@@ -881,9 +883,14 @@ bot.on('callback_query', async (ctx) => {
   return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni qayta tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
 });
 
-bot.catch((error, ctx) => {
+bot.catch(async (error, ctx) => {
   console.error(`Update ${ctx.updateType} failed:`, error.response?.description || error.message);
-  safeAnswerCbQuery(ctx);
+  await safeAnswerCbQuery(ctx);
+  try {
+    if (ctx.from?.id) await ctx.telegram.sendMessage(ctx.from.id, '⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.');
+  } catch (replyError) {
+    console.error('Error notification failed:', replyError.response?.description || replyError.message);
+  }
 });
 
 async function safeAnswerCbQuery(ctx) {
