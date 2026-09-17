@@ -107,14 +107,22 @@ function isHttpUrl(value) {
 
 function adminKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('📊 Statistika', 'admin:stats')],
-    [Markup.button.callback('🎬 Kino joylash', 'admin:add_movie')],
-    [Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast')],
-    [Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')],
-    [Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie')],
-    [Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')],
-    [Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list')],
-    [Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')]
+    [
+      Markup.button.callback('📊 Statistika', 'admin:stats'),
+      Markup.button.callback('🎬 Kino joylash', 'admin:add_movie')
+    ],
+    [
+      Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast'),
+      Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')
+    ],
+    [
+      Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie'),
+      Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')
+    ],
+    [
+      Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list'),
+      Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
+    ]
   ]);
 }
 
@@ -639,12 +647,6 @@ bot.action(/^admin:delete_confirm:(\d+)$/, async (ctx) => {
   return ctx.reply(result.deletedCount ? 'Kino o\'chirildi.' : 'Kino topilmadi.', adminKeyboard());
 });
 
-bot.on('callback_query', async (ctx) => {
-  await safeAnswerCbQuery(ctx);
-  reset(ctx);
-  return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni qayta tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
-});
-
 bot.action('admin:movie_channel', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -862,6 +864,12 @@ bot.on('text', async (ctx) => {
   }
   if (/^\d+$/.test(value)) return sendMovie(ctx, value);
   return ctx.reply(configuredMessage('invalidCode', ctx, { code: value }), replyOptions());
+});
+
+bot.on('callback_query', async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  reset(ctx);
+  return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni qayta tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
 });
 
 bot.catch((error, ctx) => {
