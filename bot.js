@@ -269,12 +269,12 @@ async function ensureUser(ctx) {
 }
 
 function movieCaption(movie, views, includeViews = true) {
-  const genre = String(movie.genre || '').trim().replace(/^#/, '').replace(/\s+/g, '_');
+  const genre = String(movie.genre || '').trim();
   const language = String(movie.language || '').trim();
   const languageFlag = { "o'zbek": '🇺🇿', uzbek: '🇺🇿', rus: '🇷🇺', russian: '🇷🇺', ingliz: '🇬🇧', english: '🇬🇧' }[language.toLowerCase()] || '';
   return `<b>🎬 ${movie.title}</b>\n\n` +
     `🔢 Kino kodi: <code>${movie.code}</code>\n` +
-    `🎭 Janri: #${genre}\n` +
+    `🎭 Janri: ${genre.startsWith('#') ? genre : `#${genre}`}\n` +
     `🌐 Tili: ${language}${languageFlag ? ` ${languageFlag}` : ''}\n` +
     `🤖 Bot: @${config.botUsername}`;
 }
