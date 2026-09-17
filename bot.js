@@ -14,7 +14,8 @@ const userSchema = new mongoose.Schema({
   telegramId: { type: Number, unique: true, required: true, index: true },
   username: { type: String, default: '' },
   nickname: { type: String, default: '' },
-  joinedAt: { type: Date, default: Date.now }
+  joinedAt: { type: Date, default: Date.now },
+  lastActiveAt: { type: Date, default: Date.now }
 }, { versionKey: false });
 
 const movieSchema = new mongoose.Schema({
@@ -26,6 +27,23 @@ const movieSchema = new mongoose.Schema({
   promoFileId: { type: String, required: true },
   promoType: { type: String, enum: ['photo', 'video'], required: true },
   views: { type: Number, default: 0 },
+  viewDays: { type: mongoose.Schema.Types.Mixed, default: {} },
+  promoMessageId: { type: Number, default: null },
+  promoChannelId: { type: Number, default: null },
+  createdAt: { type: Date, default: Date.now }
+}, { versionKey: false });
+
+const sessionSchema = new mongoose.Schema({
+  key: { type: String, unique: true, required: true },
+  data: { type: mongoose.Schema.Types.Mixed, default: {} },
+  updatedAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 7 }
+}, { versionKey: false });
+
+const broadcastSchema = new mongoose.Schema({
+  total: { type: Number, default: 0 },
+  sent: { type: Number, default: 0 },
+  failed: { type: Number, default: 0 },
+  blocked: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 }, { versionKey: false });
 
@@ -38,6 +56,8 @@ const botConfigSchema = new mongoose.Schema({
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 const Movie = mongoose.models.Movie || mongoose.model('Movie', movieSchema);
 const BotConfig = mongoose.models.BotConfig || mongoose.model('BotConfig', botConfigSchema);
+const Session = mongoose.models.BotSession || mongoose.model('BotSession', sessionSchema);
+const Broadcast = mongoose.models.Broadcast || mongoose.model('Broadcast', broadcastSchema);
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -102,6 +122,23 @@ function userKeyboard(ctx) {
   return isAdmin(ctx) ? Markup.keyboard([['Admin panel']]).resize() : Markup.removeKeyboard();
 }
 
+const persistentSessionStore = {
+  async get(key) {
+    const record = await Session.findOne({ key }).lean();
+    return record?.data;
+  },
+  async set(key, value) {
+    await Session.findOneAndUpdate(
+      { key },
+      { $set: { data: value, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  },
+  async delete(key) {
+    await Session.deleteOne({ key });
+  }
+};
+
 function formatMessage(template, ctx, values = {}) {
   const nickname = ctx.from?.first_name || ctx.from?.username || 'foydalanuvchi';
   return String(template).replace(/\{(nickname|bot_username|code)\}/g, (match, key) => ({
@@ -123,12 +160,13 @@ function welcomeMessage(ctx) {
   return configuredMessage('welcome', ctx);
 }
 
-function welcomeMarkup() {
+function welcomeMarkup(ctx) {
   const channel = data.settings.movieChannel;
-  if (!channel?.username) return undefined;
-  return Markup.inlineKeyboard([[
-    Markup.button.url('Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)
-  ]]).reply_markup;
+  const rows = [];
+  if (channel?.username) rows.push([Markup.button.url('Kino kodlari', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]);
+  rows.push([Markup.button.callback('Yordam', 'help')]);
+  if (isAdmin(ctx)) rows.push([Markup.button.callback('Admin panel', 'admin:panel')]);
+  return Markup.inlineKeyboard(rows).reply_markup;
 }
 
 function subscriptionKeyboard(channels) {
@@ -209,7 +247,7 @@ async function ensureUser(ctx) {
   const telegramId = Number(ctx.from.id);
   return User.findOneAndUpdate(
     { telegramId },
-    { $set: { username: ctx.from.username || '', nickname: ctx.from.first_name || ctx.from.last_name || '' }, $setOnInsert: { telegramId, joinedAt: new Date() } },
+    { $set: { username: ctx.from.username || '', nickname: ctx.from.first_name || ctx.from.last_name || '', lastActiveAt: new Date() }, $setOnInsert: { telegramId, joinedAt: new Date() } },
     { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   ).lean();
 }
@@ -230,9 +268,10 @@ function movieLink(code) {
 
 async function sendMovie(ctx, code) {
   const normalizedCode = String(code || '').trim();
+  const dayKey = new Date().toISOString().slice(0, 10);
   const movie = await Movie.findOneAndUpdate(
     { code: normalizedCode },
-    { $inc: { views: 1 } },
+    { $inc: { views: 1, [`viewDays.${dayKey}`]: 1 } },
     { returnDocument: 'after' }
   ).lean();
   if (!movie) return ctx.reply(configuredMessage('invalidCode', ctx, { code: normalizedCode }), replyOptions());
@@ -247,15 +286,41 @@ async function sendMovie(ctx, code) {
   });
 }
 
-async function sendMovieAdvertisement(movie) {
+async function publishMovieAdvertisement(movie, replaceMedia = false) {
   const channel = data.settings.movieChannel;
+  if (!channel?.id) throw new Error('Kino reklama kanali sozlanmagan.');
+  const replyMarkup = Markup.inlineKeyboard([[Markup.button.url('Kinoni ko\'rish', movieLink(movie.code))]]).reply_markup;
+  const caption = movieCaption(movie, 0, false);
+  if (movie.promoChannelId && movie.promoMessageId && !replaceMedia && movie.promoChannelId === channel.id) {
+    try {
+      return await bot.telegram.editMessageCaption(channel.id, movie.promoMessageId, undefined, caption, {
+        parse_mode: 'HTML',
+        reply_markup: replyMarkup
+      });
+    } catch (error) {
+      console.warn('Movie advertisement edit failed, replacing it:', error.response?.description || error.message);
+    }
+  }
+  if (movie.promoChannelId && movie.promoMessageId) {
+    try {
+      await bot.telegram.deleteMessage(movie.promoChannelId, movie.promoMessageId);
+    } catch (error) {
+      console.warn('Old movie advertisement delete failed:', error.response?.description || error.message);
+    }
+  }
   const extra = {
-    caption: movieCaption(movie, 0, false),
+    caption,
     parse_mode: 'HTML',
-    reply_markup: Markup.inlineKeyboard([[Markup.button.url('Kinoni ko\'rish', movieLink(movie.code))]]).reply_markup
+    reply_markup: replyMarkup
   };
-  if (movie.promoType === 'photo') return bot.telegram.sendPhoto(channel.id, movie.promoFileId, extra);
-  return bot.telegram.sendVideo(channel.id, movie.promoFileId, extra);
+  const message = movie.promoType === 'photo'
+    ? await bot.telegram.sendPhoto(channel.id, movie.promoFileId, extra)
+    : await bot.telegram.sendVideo(channel.id, movie.promoFileId, extra);
+  await Movie.updateOne(
+    { _id: movie._id },
+    { $set: { promoChannelId: channel.id, promoMessageId: message.message_id } }
+  );
+  return message;
 }
 
 function broadcastKeyboard() {
@@ -268,6 +333,13 @@ function broadcastKeyboard() {
 function broadcastButtonKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('Yana tugma qo\'shish', 'broadcast:add_button')],
+    [Markup.button.callback('Preview', 'broadcast:preview')],
+    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+  ]);
+}
+
+function broadcastConfirmKeyboard() {
+  return Markup.inlineKeyboard([
     [Markup.button.callback('Yuborish', 'broadcast:send')],
     [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
   ]);
@@ -280,10 +352,7 @@ function broadcastColorKeyboard() {
   ]);
 }
 
-async function sendBroadcast(ctx) {
-  const broadcast = ctx.session?.broadcast;
-  if (!broadcast) return ctx.reply('Xabar yuborish jarayoni topilmadi.');
-  const users = await User.find({}, { telegramId: 1 }).lean();
+function broadcastExtra(broadcast) {
   const replyMarkup = broadcast.buttons?.length
     ? Markup.inlineKeyboard(broadcast.buttons).reply_markup
     : undefined;
@@ -300,44 +369,79 @@ async function sendBroadcast(ctx) {
       ? { caption_entities: broadcast.captionEntities }
       : { parse_mode: 'HTML' })
   };
+  return { textExtra, mediaExtra };
+}
+
+async function sendBroadcastMessage(chatId, broadcast) {
+  const { textExtra, mediaExtra } = broadcastExtra(broadcast);
+  if (broadcast.mediaType === 'photo') {
+    return bot.telegram.sendPhoto(chatId, broadcast.media, { ...mediaExtra, caption: broadcast.caption || undefined });
+  }
+  if (broadcast.mediaType === 'video') {
+    return bot.telegram.sendVideo(chatId, broadcast.media, { ...mediaExtra, caption: broadcast.caption || undefined });
+  }
+  if (broadcast.mediaType === 'animation') {
+    return bot.telegram.sendAnimation(chatId, broadcast.media, { ...mediaExtra, caption: broadcast.caption || undefined });
+  }
+  return bot.telegram.sendMessage(chatId, broadcast.caption || ' ', textExtra);
+}
+
+async function previewBroadcast(ctx) {
+  const broadcast = ctx.session?.broadcast;
+  if (!broadcast) return ctx.reply('Xabar yuborish jarayoni topilmadi.');
+  try {
+    await sendBroadcastMessage(ctx.from.id, broadcast);
+    broadcast.previewed = true;
+    return ctx.reply('Preview yuborildi. Tekshirib, yuborishni tasdiqlang.', broadcastConfirmKeyboard());
+  } catch (error) {
+    return ctx.reply(`Preview yuborilmadi: ${error.response?.description || error.message}`);
+  }
+}
+
+async function sendBroadcast(ctx) {
+  const broadcast = ctx.session?.broadcast;
+  if (!broadcast) return ctx.reply('Xabar yuborish jarayoni topilmadi.');
+  const users = await User.find({}, { telegramId: 1 }).lean();
+  const log = await Broadcast.create({ total: users.length });
   let sent = 0;
+  let failed = 0;
+  let blocked = 0;
+  let processed = 0;
   for (const user of users) {
     try {
       const chat = await bot.telegram.getChat(user.telegramId);
       if (chat.type !== 'private') continue;
-      if (broadcast.mediaType === 'photo') {
-        await bot.telegram.sendPhoto(user.telegramId, broadcast.media, {
-          ...mediaExtra,
-          caption: broadcast.caption || undefined
-        });
-      } else if (broadcast.mediaType === 'video') {
-        await bot.telegram.sendVideo(user.telegramId, broadcast.media, {
-          ...mediaExtra,
-          caption: broadcast.caption || undefined
-        });
-      } else if (broadcast.mediaType === 'animation') {
-        await bot.telegram.sendAnimation(user.telegramId, broadcast.media, {
-          ...mediaExtra,
-          caption: broadcast.caption || undefined
-        });
-      } else {
-        await bot.telegram.sendMessage(user.telegramId, broadcast.caption || ' ', textExtra);
-      }
+      await sendBroadcastMessage(user.telegramId, broadcast);
       sent += 1;
     } catch (error) {
+      failed += 1;
+      if (error.response?.error_code === 403) blocked += 1;
       console.error(`Broadcast to ${user.telegramId} failed:`, error.response?.description || error.message);
     }
+    processed += 1;
+    if (processed % 25 === 0 || processed === users.length) {
+      await ctx.telegram.sendMessage(ctx.from.id, `Broadcast progress: ${processed} / ${users.length} yuborildi`);
+    }
   }
-  return sent;
+  await Broadcast.updateOne({ _id: log._id }, { $set: { sent, failed, blocked } });
+  return { total: users.length, sent, failed, blocked };
 }
 
 async function adminStats(ctx) {
-  const [subscribers, movies, views] = await Promise.all([
+  const now = Date.now();
+  const [subscribers, activeUsers, movies, views, popular, broadcasts] = await Promise.all([
     User.countDocuments(),
+    User.countDocuments({ lastActiveAt: { $gte: new Date(now - 24 * 60 * 60 * 1000) } }),
     Movie.countDocuments(),
-    Movie.aggregate([{ $group: { _id: null, total: { $sum: '$views' } } }])
+    Movie.aggregate([{ $group: { _id: null, total: { $sum: '$views' } } }]),
+    Movie.find({}, { title: 1, code: 1, views: 1 }).sort({ views: -1 }).limit(5).lean(),
+    Broadcast.aggregate([{ $group: { _id: null, total: { $sum: 1 }, sent: { $sum: '$sent' }, failed: { $sum: '$failed' }, blocked: { $sum: '$blocked' } } }])
   ]);
-  return ctx.reply(`Bot statistikasi\n\nObunachilar: ${subscribers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}`, adminKeyboard());
+  const popularText = popular.length
+    ? popular.map((movie, index) => `${index + 1}. ${movie.title} (${movie.code}) - ${movie.views || 0}`).join('\n')
+    : 'Hali kino ko\'rilmagan.';
+  const broadcastStats = broadcasts[0] || { total: 0, sent: 0, failed: 0, blocked: 0 };
+  return ctx.reply(`📊 Bot statistikasi\n\nObunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}\n\nEng ko'p ko'rilganlar:\n${popularText}\n\nBroadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}`, adminKeyboard());
 }
 
 function movieAdminKeyboard(code) {
@@ -373,15 +477,15 @@ async function handleStart(ctx) {
   if (!(await requiredSubscription(ctx))) return;
   const payload = ctx.startPayload || '';
   if (payload.startsWith('movie_')) return sendMovie(ctx, payload.slice(6));
-  return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup() || userKeyboard(ctx).reply_markup));
+  return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup(ctx) || userKeyboard(ctx).reply_markup));
 }
-
-bot.use(session());
 
 bot.use(async (ctx, next) => {
   if (ctx.chat && ctx.chat.type !== 'private') return;
   return next();
 });
+
+bot.use(session({ store: persistentSessionStore }));
 
 bot.start(handleStart);
 
@@ -394,7 +498,12 @@ bot.use(async (ctx, next) => {
 
 bot.action('check_subscription', async (ctx) => {
   await ctx.answerCbQuery();
-  if (await requiredSubscription(ctx)) return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup() || userKeyboard(ctx).reply_markup));
+  if (await requiredSubscription(ctx)) return ctx.reply(welcomeMessage(ctx), replyOptions(welcomeMarkup(ctx) || userKeyboard(ctx).reply_markup));
+});
+
+bot.action('help', async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.reply('Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.');
 });
 
 bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
@@ -443,6 +552,12 @@ bot.action('broadcast:add_button', async (ctx) => {
   return ctx.reply('Inline tugma matnini yuboring:');
 });
 
+bot.action('broadcast:preview', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_buttons') return ctx.reply('Avval xabarni tayyorlang.');
+  return previewBroadcast(ctx);
+});
+
 bot.action(/^broadcast:color:(blue|green|red)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_button_color') return ctx.reply('Tugma rangi tanlash bosqichi topilmadi.');
@@ -460,10 +575,10 @@ bot.action(/^broadcast:color:(blue|green|red)$/, async (ctx) => {
 
 bot.action('broadcast:send', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx) || !ctx.session?.broadcast) return ctx.reply('Broadcast jarayoni topilmadi.');
-  const sent = await sendBroadcast(ctx);
+  if (!isAdmin(ctx) || !ctx.session?.broadcast?.previewed) return ctx.reply('Avval Preview tugmasini bosing.');
+  const result = await sendBroadcast(ctx);
   reset(ctx);
-  return ctx.reply(`Xabar ${sent} ta obunachiga yuborildi.`, adminKeyboard());
+  return ctx.reply(`Xabar yuborildi.\nJami: ${result.total}\nYetib bordi: ${result.sent}\nBloklagan: ${result.blocked}\nXatolik: ${result.failed}`, adminKeyboard());
 });
 
 bot.action('broadcast:cancel', async (ctx) => {
@@ -591,7 +706,7 @@ bot.on('video', async (ctx) => {
       { $set: { promoFileId: ctx.message.video.file_id, promoType: 'video' } },
       { returnDocument: 'after' }
     ).lean();
-    if (movie) await sendMovieAdvertisement(movie);
+    if (movie) await publishMovieAdvertisement(movie, true);
     reset(ctx);
     return ctx.reply(movie ? 'Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
@@ -621,7 +736,7 @@ bot.on('photo', async (ctx) => {
       { $set: { promoFileId: ctx.message.photo.at(-1).file_id, promoType: 'photo' } },
       { returnDocument: 'after' }
     ).lean();
-    if (movie) await sendMovieAdvertisement(movie);
+    if (movie) await publishMovieAdvertisement(movie, true);
     reset(ctx);
     return ctx.reply(movie ? 'Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
@@ -641,7 +756,7 @@ bot.on('animation', async (ctx) => {
 
 async function finishMovieCreation(ctx) {
   const movie = await Movie.create(ctx.session.movie);
-  await sendMovieAdvertisement(movie);
+  await publishMovieAdvertisement(movie);
   reset(ctx);
   return ctx.reply(`Kino joylandi va ${data.settings.movieChannel.username} kanaliga reklama yuborildi.`, adminKeyboard());
 }
@@ -698,6 +813,7 @@ bot.on('text', async (ctx) => {
       { $set: { [field]: value } },
       { returnDocument: 'after' }
     ).lean();
+    if (movie) await publishMovieAdvertisement(movie);
     reset(ctx);
     return ctx.reply(movie ? 'Kino ma\'lumoti yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
