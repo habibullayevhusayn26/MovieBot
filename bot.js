@@ -72,11 +72,19 @@ const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const ADMIN_TG_ID = config.admin.telegramId;
 const data = { settings: { requiredChannels: [], movieChannel: null } };
+const premiumEmojis = {
+  welcome: '<tg-emoji emoji-id="5199785165735367039">⚡️</tg-emoji>',
+  bot: '<tg-emoji emoji-id="5323359973365784232">🤖</tg-emoji>',
+  confirm: '<tg-emoji emoji-id="5393275607083676065">✔️</tg-emoji>',
+  warning: '<tg-emoji emoji-id="5215351548850218245">⚠️</tg-emoji>',
+  web: '<tg-emoji emoji-id="5231482153228835967">🌐</tg-emoji>'
+};
 const defaultMessages = {
-  welcome: 'Assalomu alaykum {nickname}\n\n@{bot_username} orqali siz o\'zingizga yoqqan kinoni topishingiz mumkin\nShunchaki kino kodini yuboring va kinoni oling',
-  subscriptionRequired: 'Botdan foydalanish uchun quyidagi kanallarga obuna bo\'ling',
+  welcome: `${premiumEmojis.welcome} Assalomu alaykum {nickname}\n\n${premiumEmojis.bot} @{bot_username} orqali siz o\'zingizga yoqqan kinoni topishingiz mumkin\n${premiumEmojis.confirm} Shunchaki kino kodini yuboring va kinoni oling`,
+  subscriptionRequired: `${premiumEmojis.warning} Botdan foydalanish uchun quyidagi kanallarga obuna bo\'ling`,
   invalidCode: 'Kino kodi xato. Boshqa kino kodini yuboring.',
-  nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.'
+  nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.',
+  help: `${premiumEmojis.web} Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.`
 };
 const legacyButtonLabels = new Set([
   '📨 Post yuborish', '🎬 Video saqlash', '📢 Kanallar ro\'yxati', '➕ Kanal qo\'shish',
@@ -171,18 +179,18 @@ function welcomeMessage(ctx) {
 function welcomeMarkup(ctx) {
   const channel = data.settings.movieChannel;
   const rows = [];
-  if (channel?.username) rows.push([Markup.button.url('Kino kodlari', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]);
-  rows.push([Markup.button.callback('Yordam', 'help')]);
-  if (isAdmin(ctx)) rows.push([Markup.button.callback('Admin panel', 'admin:panel')]);
+  if (channel?.username) rows.push([Markup.button.url('🎞 Kino kodlari', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]);
+  rows.push([Markup.button.callback('❓ Yordam', 'help')]);
+  if (isAdmin(ctx)) rows.push([Markup.button.callback('🛠 Admin panel', 'admin:panel')]);
   return Markup.inlineKeyboard(rows).reply_markup;
 }
 
 function subscriptionKeyboard(channels) {
   const rows = channels.map((channel, index) => [Markup.button.url(
-    `${index + 1} - kanal`,
+    `📢 ${index + 1} - kanal`,
     `https://t.me/${String(channel.username).replace(/^@/, '')}`
   )]);
-  rows.push([Markup.button.callback('Tekshirish', 'check_subscription')]);
+  rows.push([Markup.button.callback('✅ Tekshirish', 'check_subscription')]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -248,7 +256,7 @@ async function hydrateSettings() {
   }
   data.settings.requiredChannels = configDocument.channels || [];
   data.settings.movieChannel = configDocument.settings?.movieChannel || null;
-  data.settings.messages = { ...defaultMessages, ...(configDocument.settings?.messages || {}) };
+  data.settings.messages = { ...defaultMessages };
 }
 
 async function ensureUser(ctx) {
@@ -261,13 +269,14 @@ async function ensureUser(ctx) {
 }
 
 function movieCaption(movie, views, includeViews = true) {
-  const viewsLine = includeViews ? `Ko'rilgan: ${views} marta\n` : '';
-  return `<b>${movie.title}</b>\n\n` +
-    `Kino kodi: <code>${movie.code}</code>\n` +
-    `Janri: ${movie.genre}\n` +
-    `Tili: ${movie.language}\n` +
-    viewsLine +
-    `Bot: @${config.botUsername}`;
+  const genre = String(movie.genre || '').trim().replace(/^#/, '').replace(/\s+/g, '_');
+  const language = String(movie.language || '').trim();
+  const languageFlag = { "o'zbek": '🇺🇿', uzbek: '🇺🇿', rus: '🇷🇺', russian: '🇷🇺', ingliz: '🇬🇧', english: '🇬🇧' }[language.toLowerCase()] || '';
+  return `<b>🎬 ${movie.title}</b>\n\n` +
+    `🔢 Kino kodi: <code>${movie.code}</code>\n` +
+    `🎭 Janri: #${genre}\n` +
+    `🌐 Tili: ${language}${languageFlag ? ` ${languageFlag}` : ''}\n` +
+    `🤖 Bot: @${config.botUsername}`;
 }
 
 function movieLink(code) {
@@ -285,7 +294,7 @@ async function sendMovie(ctx, code) {
   if (!movie) return ctx.reply(configuredMessage('invalidCode', ctx, { code: normalizedCode }), replyOptions());
   const channel = data.settings.movieChannel;
   const buttonRows = channel?.username
-    ? [[Markup.button.url('Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
+    ? [[Markup.button.url('🎞 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
   return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
     caption: movieCaption(movie, movie.views),
@@ -297,7 +306,7 @@ async function sendMovie(ctx, code) {
 async function publishMovieAdvertisement(movie, replaceMedia = false) {
   const channel = data.settings.movieChannel;
   if (!channel?.id) throw new Error('Kino reklama kanali sozlanmagan.');
-  const replyMarkup = Markup.inlineKeyboard([[Markup.button.url('Kinoni ko\'rish', movieLink(movie.code))]]).reply_markup;
+  const replyMarkup = Markup.inlineKeyboard([[Markup.button.url('▶️ Kinoni ko\'rish', movieLink(movie.code))]]).reply_markup;
   const caption = movieCaption(movie, 0, false);
   if (movie.promoChannelId && movie.promoMessageId && !replaceMedia && movie.promoChannelId === channel.id) {
     try {
@@ -333,30 +342,30 @@ async function publishMovieAdvertisement(movie, replaceMedia = false) {
 
 function broadcastKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Rasmsiz davom etish', 'broadcast:no_media')],
-    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+    [Markup.button.callback('➡️ Rasmsiz davom etish', 'broadcast:no_media')],
+    [Markup.button.callback('❌ Bekor qilish', 'broadcast:cancel')]
   ]);
 }
 
 function broadcastButtonKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Yana tugma qo\'shish', 'broadcast:add_button')],
-    [Markup.button.callback('Preview', 'broadcast:preview')],
-    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+    [Markup.button.callback('➕ Yana tugma qo\'shish', 'broadcast:add_button')],
+    [Markup.button.callback('👁 Preview', 'broadcast:preview')],
+    [Markup.button.callback('❌ Bekor qilish', 'broadcast:cancel')]
   ]);
 }
 
 function broadcastConfirmKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Yuborish', 'broadcast:send')],
-    [Markup.button.callback('Bekor qilish', 'broadcast:cancel')]
+    [Markup.button.callback('📤 Yuborish', 'broadcast:send')],
+    [Markup.button.callback('❌ Bekor qilish', 'broadcast:cancel')]
   ]);
 }
 
 function broadcastColorKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Ko\'k', 'broadcast:color:blue'), Markup.button.callback('Yashil', 'broadcast:color:green')],
-    [Markup.button.callback('Qizil', 'broadcast:color:red')]
+    [Markup.button.callback('🔵 Ko\'k', 'broadcast:color:blue'), Markup.button.callback('🟢 Yashil', 'broadcast:color:green')],
+    [Markup.button.callback('🔴 Qizil', 'broadcast:color:red')]
   ]);
 }
 
@@ -454,9 +463,9 @@ async function adminStats(ctx) {
 
 function movieAdminKeyboard(code) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Ma\'lumotlarni o\'zgartirish', `admin:edit_movie:${code}`)],
-    [Markup.button.callback('Kinoni o\'chirish', `admin:delete_movie:${code}`)],
-    [Markup.button.callback('Admin panel', 'admin:panel')]
+    [Markup.button.callback('✏️ Ma\'lumotlarni o\'zgartirish', `admin:edit_movie:${code}`)],
+    [Markup.button.callback('🗑 Kinoni o\'chirish', `admin:delete_movie:${code}`)],
+    [Markup.button.callback('🛠 Admin panel', 'admin:panel')]
   ]);
 }
 
@@ -470,13 +479,13 @@ function movieAdminText(movie) {
 
 function movieEditKeyboard(code) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('Nomini o\'zgartirish', `admin:edit_field:title:${code}`)],
-    [Markup.button.callback('Kodini o\'zgartirish', `admin:edit_field:code:${code}`)],
-    [Markup.button.callback('Janrini o\'zgartirish', `admin:edit_field:genre:${code}`)],
-    [Markup.button.callback('Tilini o\'zgartirish', `admin:edit_field:language:${code}`)],
-    [Markup.button.callback('Videosini o\'zgartirish', `admin:edit_field:video:${code}`)],
-    [Markup.button.callback('Reklama mediasini o\'zgartirish', `admin:edit_field:promo:${code}`)],
-    [Markup.button.callback('Orqaga', `admin:movie:${code}`)]
+    [Markup.button.callback('📝 Nomini o\'zgartirish', `admin:edit_field:title:${code}`)],
+    [Markup.button.callback('🔢 Kodini o\'zgartirish', `admin:edit_field:code:${code}`)],
+    [Markup.button.callback('🎭 Janrini o\'zgartirish', `admin:edit_field:genre:${code}`)],
+    [Markup.button.callback('🌐 Tilini o\'zgartirish', `admin:edit_field:language:${code}`)],
+    [Markup.button.callback('🎥 Videosini o\'zgartirish', `admin:edit_field:video:${code}`)],
+    [Markup.button.callback('🖼 Reklama mediasini o\'zgartirish', `admin:edit_field:promo:${code}`)],
+    [Markup.button.callback('⬅️ Orqaga', `admin:movie:${code}`)]
   ]);
 }
 
@@ -511,7 +520,7 @@ bot.action('check_subscription', async (ctx) => {
 
 bot.action('help', async (ctx) => {
   await ctx.answerCbQuery();
-  return ctx.reply('Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.');
+  return ctx.reply(configuredMessage('help', ctx), replyOptions());
 });
 
 bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
@@ -634,8 +643,8 @@ bot.action(/^admin:delete_movie:(\d+)$/, async (ctx) => {
   const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
   if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
   return ctx.reply(`${movie.title} filmini o\'chirishni tasdiqlaysizmi?`, Markup.inlineKeyboard([
-    [Markup.button.callback('Ha, o\'chirish', `admin:delete_confirm:${movie.code}`)],
-    [Markup.button.callback('Bekor qilish', `admin:movie:${movie.code}`)]
+    [Markup.button.callback('✅ Ha, o\'chirish', `admin:delete_confirm:${movie.code}`)],
+    [Markup.button.callback('❌ Bekor qilish', `admin:movie:${movie.code}`)]
   ]));
 });
 
