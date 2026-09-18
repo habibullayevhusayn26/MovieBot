@@ -417,7 +417,7 @@ function broadcastColorKeyboard() {
   ]);
 }
 
-function broadcastExtra(broadcast) {
+function broadcastExtra(broadcast, chatId) {
   const replyMarkup = broadcast.buttons?.length
     ? Markup.inlineKeyboard(broadcast.buttons).reply_markup
     : undefined;
@@ -439,7 +439,7 @@ function broadcastExtra(broadcast) {
 }
 
 async function sendBroadcastMessage(chatId, broadcast) {
-  const { textExtra, mediaExtra } = broadcastExtra(broadcast);
+  const { textExtra, mediaExtra } = broadcastExtra(broadcast, chatId);
   if (broadcast.mediaType === 'photo') {
     return bot.telegram.sendPhoto(chatId, broadcast.media, { ...mediaExtra, caption: broadcast.caption || undefined });
   }
