@@ -1069,6 +1069,33 @@ bot.command('admin', (ctx) => {
   return ctx.reply('Admin panel', adminKeyboard(ctx));
 });
 
+bot.command('music', async (ctx) => {
+  const query = String(ctx.message?.text || '')
+    .replace(/^\/music(?:@\w+)?\s*/i, '')
+    .trim();
+  if (!query) {
+    ctx.session = { step: 'music_search' };
+    return ctx.reply('🎵 Musiqa nomi yoki artistini yuboring:', replyOptions());
+  }
+  reset(ctx);
+  return replyMusicResults(ctx, query);
+});
+
+bot.command('kino', async (ctx) => {
+  const code = String(ctx.message?.text || '')
+    .replace(/^\/kino(?:@\w+)?\s*/i, '')
+    .trim();
+  if (!code) {
+    ctx.session = { step: 'movie_search' };
+    return ctx.reply('🎬 Kino kodini yuboring (masalan: 1001):', replyOptions());
+  }
+  if (!/^\d+$/.test(code)) {
+    return ctx.reply(configuredMessage('nonNumericCode', ctx, { code }), replyOptions());
+  }
+  reset(ctx);
+  return sendMovie(ctx, code);
+});
+
 bot.action('admin:stats', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -1424,6 +1451,11 @@ bot.on('text', async (ctx) => {
   if (step === 'music_search') {
     reset(ctx);
     return replyMusicResults(ctx, value);
+  }
+  if (step === 'movie_search') {
+    if (!/^\d+$/.test(value)) return ctx.reply(configuredMessage('nonNumericCode', ctx, { code: value }), replyOptions());
+    reset(ctx);
+    return sendMovie(ctx, value);
   }
   if (step === 'broadcast_button_text') {
     ctx.session.pendingButtonText = value;
