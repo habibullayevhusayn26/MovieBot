@@ -283,8 +283,13 @@ function delay(ms) {
 }
 
 async function searchMusicJamendo(query) {
+  const clientId = String(process.env.JAMENDO_CLIENT_ID || '').trim();
+  if (!clientId) {
+    throw new Error('Jamendo ishlashi uchun JAMENDO_CLIENT_ID sozlanmagan.');
+  }
+
   const params = new URLSearchParams({
-    client_id: process.env.JAMENDO_CLIENT_ID || config.youtubeApiKey,
+    client_id: clientId,
     format: 'json',
     limit: '10',
     namesearch: query,
@@ -303,36 +308,13 @@ async function searchMusicJamendo(query) {
     title: item.name || 'Noma\'lum musiqa',
     artist: item.artist_name || 'Noma\'lum artist',
     duration: formatMusicDuration(item.duration),
-    downloadUrl: item.audiodownload
+    downloadUrl: item.audiodownload,
+    source: 'jamendo'
   }));
 }
 
 async function searchMusic(query) {
-  try {
-    const key = config.youtubeApiKey;
-    if (!key) throw new Error('YouTube API kaliti sozlanmagan.');
-
-    const response = await fetchWithTimeout(buildYoutubeSearchUrl(query, key));
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      const combined = `${response.status} ${errorText || response.statusText}`;
-      if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(combined)) {
-        return searchMusicJamendo(query);
-      }
-      throw new Error(`YouTube qidiruvi ishlamadi: ${combined}`);
-    }
-
-    const payload = await response.json();
-    const items = (payload.items || []).filter((item) => item?.id?.videoId).map(normalizeYouTubeSearchResult);
-    if (!items.length) return searchMusicJamendo(query);
-    return addYoutubeDurations(items, key);
-  } catch (error) {
-    const message = String(error?.message || error || '');
-    if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
-      return searchMusicJamendo(query);
-    }
-    throw error;
-  }
+  return searchMusicJamendo(query);
 }
 
 function formatMusicDuration(value) {
@@ -375,6 +357,15 @@ async function downloadMusicMp3(result) {
     if (isYoutubeUrl(rawUrl)) {
       const axios = require('axios');
       const cobaltApiUrl = process.env.COBALT_API_URL || 'https://api.cobalt.tools/';
+      const cobaltHeaders = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      };
+      if (process.env.COBALT_API_KEY) {
+        cobaltHeaders.Authorization = `Api-Key ${process.env.COBALT_API_KEY}`;
+      } else if (process.env.COBALT_BEARER_TOKEN) {
+        cobaltHeaders.Authorization = `Bearer ${process.env.COBALT_BEARER_TOKEN}`;
+      }
       let cobaltResponse;
       try {
         cobaltResponse = await axios.post(cobaltApiUrl, {
@@ -383,10 +374,7 @@ async function downloadMusicMp3(result) {
           audioFormat: 'mp3',
           audioBitrate: '128'
         }, {
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json'
-          },
+          headers: cobaltHeaders,
           timeout: 60000
         });
       } catch (error) {
@@ -414,7 +402,7 @@ async function downloadMusicMp3(result) {
       });
     } else {
     const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
-    const preferAlternateSource = rawUrl && primaryProxyPattern.test(rawUrl);
+    const preferAlternateSource = result?.source !== 'jamendo' && rawUrl && primaryProxyPattern.test(rawUrl);
 
     let chosenUrl = rawUrl;
     if (preferAlternateSource) {
@@ -1025,7 +1013,8 @@ async function replyMusicResults(ctx, query) {
       title: item.title,
       artist: item.artist,
       duration: item.duration,
-      downloadUrl: item.downloadUrl
+      downloadUrl: item.downloadUrl,
+      source: item.source
     }));
     ctx.session = { step: 'music_pick', musicResults: results };
     const rows = [];
