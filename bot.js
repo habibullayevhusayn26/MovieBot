@@ -82,7 +82,7 @@ const premiumEmojis = {
 const defaultMessages = {
   welcome: `${premiumEmojis.welcome} Assalomu alaykum {nickname}\n\n${premiumEmojis.bot} @{bot_username} orqali siz o\'zingizga yoqqan kinoni topishingiz mumkin\n${premiumEmojis.confirm} Shunchaki kino kodini yuboring va kinoni oling`,
   subscriptionRequired: `${premiumEmojis.warning} Botdan foydalanish uchun quyidagi kanallarga obuna bo\'ling`,
-  invalidCode: 'Kino kodi xato. Boshqa kino kodini yuboring.',
+  invalidCode: '<tg-emoji emoji-id="5212992409213872592">❌</tg-emoji> Kino kodi xato. Boshqa kino kodini yuboring.',
   nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.',
   help: `${premiumEmojis.web} Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.`
 };
@@ -458,7 +458,7 @@ async function adminStats(ctx) {
     ? popular.map((movie, index) => `${index + 1}. ${movie.title} (${movie.code}) - ${movie.views || 0}`).join('\n')
     : 'Hali kino ko\'rilmagan.';
   const broadcastStats = broadcasts[0] || { total: 0, sent: 0, failed: 0, blocked: 0 };
-  return ctx.reply(`📊 Bot statistikasi\n\nObunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}\n\nEng ko'p ko'rilganlar:\n${popularText}\n\nBroadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}`, adminKeyboard());
+  return ctx.reply(`<tg-emoji emoji-id="5244825199278311613">📊</tg-emoji> Bot statistikasi\n\nObunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}\n\nEng ko'p ko'rilganlar:\n${popularText}\n\nBroadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}`, replyOptions(adminKeyboard().reply_markup));
 }
 
 function movieAdminKeyboard(code) {
@@ -545,21 +545,21 @@ bot.action('admin:find_movie', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   ctx.session = { step: 'find_movie' };
-  return ctx.reply('Tahrirlash yoki o\'chirish uchun kino kodini yuboring:');
+  return ctx.reply('<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji> Tahrirlash yoki o\'chirish uchun kino kodini yuboring:', replyOptions());
 });
 
 bot.action('admin:broadcast', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   ctx.session = { step: 'broadcast_media', broadcast: { buttons: [] } };
-  return ctx.reply('Xabar uchun rasm, video yoki GIF yuboring. Media shart emas:', broadcastKeyboard());
+  return ctx.reply('<tg-emoji emoji-id="5350693961281314631">🖼</tg-emoji> Xabar uchun rasm, video yoki GIF yuboring. Media shart emas:', replyOptions(broadcastKeyboard().reply_markup));
 });
 
 bot.action('broadcast:no_media', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx) || ctx.session?.step !== 'broadcast_media') return ctx.reply('Broadcast jarayoni topilmadi.');
   ctx.session.step = 'broadcast_caption';
-  return ctx.reply('Xabar matnini yuboring. Premium emoji uchun HTML teglaridan foydalanishingiz mumkin:');
+  return ctx.reply('<tg-emoji emoji-id="5393314064220843793">💬</tg-emoji> Xabar matnini yuboring. Premium emoji uchun HTML teglaridan foydalanishingiz mumkin:', replyOptions());
 });
 
 bot.action('broadcast:add_button', async (ctx) => {
@@ -660,7 +660,7 @@ bot.action('admin:movie_channel', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   ctx.session = { step: 'movie_channel' };
-  return ctx.reply('Kino reklamasi tashlanadigan kanal username sini yuboring, masalan: @kino_kanal');
+  return ctx.reply('<tg-emoji emoji-id="5352629724516458059">✈️</tg-emoji> Kino reklamasi tashlanadigan kanal username sini yuboring, masalan: @kino_kanal', replyOptions());
 });
 
 bot.action('admin:subscription', async (ctx) => {
@@ -691,7 +691,7 @@ bot.action('admin:add_movie', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   if (!data.settings.movieChannel) return ctx.reply('Avval kino reklama kanalini qo\'shing va botni unga admin qiling.', adminKeyboard());
   ctx.session = { step: 'movie_title' };
-  return ctx.reply('Kino nomini yuboring:');
+  return ctx.reply('<tg-emoji emoji-id="5375464961822695044">🎬</tg-emoji> Kino nomini yuboring:', replyOptions());
 });
 
 bot.on('video', async (ctx) => {
