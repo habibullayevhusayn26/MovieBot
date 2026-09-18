@@ -4,7 +4,12 @@ process.env.TZ = config.timezone;
 
 const mongoose = require('mongoose');
 const express = require('express');
-const { Telegraf, Markup, session } = require('telegraf');
+const { Telegraf, Markup, session, Input } = require('telegraf');
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const ffmpegPath = require('ffmpeg-static');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -24,6 +29,8 @@ const movieSchema = new mongoose.Schema({
   genre: { type: String, required: true },
   language: { type: String, required: true },
   videoFileId: { type: String, required: true },
+  mergedVideoFileId: { type: String, default: null },
+  mergedIntroFileId: { type: String, default: null },
   promoFileId: { type: String, required: true },
   promoType: { type: String, enum: ['photo', 'video'], required: true },
   views: { type: Number, default: 0 },
@@ -71,7 +78,7 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const ADMIN_TG_ID = config.admin.telegramId;
-const data = { settings: { requiredChannels: [], movieChannel: null } };
+const data = { settings: { requiredChannels: [], movieChannel: null, introFileId: null } };
 const premiumEmojis = {
   welcome: '<tg-emoji emoji-id="5199785165735367039">⚡️</tg-emoji>',
   bot: '<tg-emoji emoji-id="5323359973365784232">🤖</tg-emoji>',
@@ -123,6 +130,7 @@ function adminKeyboard() {
       Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast'),
       Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')
     ],
+    [Markup.button.callback('🎞 Kino intro sini sozlash', 'admin:intro')],
     [
       Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie'),
       Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')
@@ -242,7 +250,7 @@ async function checkFullAdmin(ctx, username) {
 async function saveSettings() {
   await BotConfig.findOneAndUpdate(
     { configKey: 'main_config' },
-    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, messages: data.settings.messages } } },
+    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, introFileId: data.settings.introFileId, messages: data.settings.messages } } },
     { upsert: true }
   );
 }
@@ -256,6 +264,7 @@ async function hydrateSettings() {
   }
   data.settings.requiredChannels = configDocument.channels || [];
   data.settings.movieChannel = configDocument.settings?.movieChannel || null;
+  data.settings.introFileId = configDocument.settings?.introFileId || null;
   data.settings.messages = { ...defaultMessages };
 }
 
@@ -283,6 +292,52 @@ function movieLink(code) {
   return `https://t.me/${config.botUsername}?start=movie_${encodeURIComponent(code)}`;
 }
 
+async function downloadTelegramFile(telegram, fileId, destination) {
+  const fileUrl = await telegram.getFileLink(fileId);
+  const response = await fetch(fileUrl);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+  await fs.writeFile(destination, Buffer.from(await response.arrayBuffer()));
+}
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const process = spawn(ffmpegPath, args);
+    let errorOutput = '';
+    process.stderr.on('data', (chunk) => { errorOutput += chunk.toString(); });
+    process.on('error', reject);
+    process.on('close', (code) => code === 0
+      ? resolve()
+      : reject(new Error(errorOutput.split('\n').filter(Boolean).at(-1) || `FFmpeg exited with code ${code}`)));
+  });
+}
+
+async function mergeIntroAndMovie(telegram, introFileId, movieFileId) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-bot-'));
+  const introPath = path.join(tempDir, 'intro.mp4');
+  const moviePath = path.join(tempDir, 'movie.mp4');
+  const outputPath = path.join(tempDir, 'merged.mp4');
+  try {
+    await Promise.all([
+      downloadTelegramFile(telegram, introFileId, introPath),
+      downloadTelegramFile(telegram, movieFileId, moviePath)
+    ]);
+    await runFfmpeg([
+      '-y', '-i', introPath, '-i', moviePath,
+      '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]',
+      '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast',
+      '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', outputPath
+    ]);
+    return { outputPath, tempDir };
+  } catch (error) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function removeTempDirectory(tempDir) {
+  if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
+}
+
 async function sendMovie(ctx, code) {
   const normalizedCode = String(code || '').trim();
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -296,11 +351,35 @@ async function sendMovie(ctx, code) {
   const buttonRows = channel?.username
     ? [[Markup.button.url('🎞 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
-  return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
+  let video = movie.videoFileId;
+  let tempDir;
+  try {
+    if (data.settings.introFileId) {
+      if (movie.mergedVideoFileId && movie.mergedIntroFileId === data.settings.introFileId) {
+        video = movie.mergedVideoFileId;
+      } else {
+        const merged = await mergeIntroAndMovie(ctx.telegram, data.settings.introFileId, movie.videoFileId);
+        tempDir = merged.tempDir;
+        const sentMergedVideo = await ctx.telegram.sendVideo(ctx.from.id, Input.fromLocalFile(merged.outputPath), {
+          caption: movieCaption(movie, movie.views),
+          parse_mode: 'HTML',
+          reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
+        });
+        await Movie.updateOne(
+          { _id: movie._id },
+          { $set: { mergedVideoFileId: sentMergedVideo.video.file_id, mergedIntroFileId: data.settings.introFileId } }
+        );
+        return sentMergedVideo;
+      }
+    }
+    return ctx.telegram.sendVideo(ctx.from.id, video, {
     caption: movieCaption(movie, movie.views),
     parse_mode: 'HTML',
     reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
-  });
+    });
+  } finally {
+    await removeTempDirectory(tempDir);
+  }
 }
 
 async function publishMovieAdvertisement(movie, replaceMedia = false) {
@@ -663,6 +742,15 @@ bot.action('admin:movie_channel', async (ctx) => {
   return ctx.reply('Kino reklamasi tashlanadigan kanal username sini yuboring, masalan: @kino_kanal');
 });
 
+bot.action('admin:intro', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  ctx.session = { step: 'intro_video' };
+  return ctx.reply(data.settings.introFileId
+    ? 'Yangi intro videosini yuboring. U mavjud intro o\'rniga saqlanadi:'
+    : 'Barcha kinolar boshlanishida yuboriladigan intro videosini yuboring:');
+});
+
 bot.action('admin:subscription', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -720,6 +808,12 @@ bot.on('video', async (ctx) => {
     if (movie) await publishMovieAdvertisement(movie, true);
     reset(ctx);
     return ctx.reply(movie ? 'Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
+  }
+  if (ctx.session?.step === 'intro_video') {
+    data.settings.introFileId = ctx.message.video.file_id;
+    await saveSettings();
+    reset(ctx);
+    return ctx.reply('Kino intro si saqlandi. Endi barcha kinolar intro bilan yuboriladi.', adminKeyboard());
   }
   if (ctx.session?.step === 'movie_video') {
     ctx.session.movie.videoFileId = ctx.message.video.file_id;
