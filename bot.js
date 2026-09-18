@@ -270,7 +270,8 @@ async function downloadMusicMp3(result) {
   const videoUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
   try {
     const ytDlp = await getYtDlp();
-    const clientAttempts = ['android', 'web'];
+    const clientAttempts = ['web_safari', 'mweb', 'android_vr', 'web'];
+    const attemptErrors = [];
     let lastError;
     for (const client of clientAttempts) {
       try {
@@ -278,7 +279,7 @@ async function downloadMusicMp3(result) {
           videoUrl,
           '--no-playlist',
           '--extractor-args', `youtube:player_client=${client}`,
-          '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
+          '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
           '-f', 'bestaudio[ext=m4a]/bestaudio/best',
           '-x',
           '--audio-format', 'mp3',
@@ -288,6 +289,7 @@ async function downloadMusicMp3(result) {
           '--fragment-retries', '3',
           '--socket-timeout', '30',
           '--js-runtimes', 'node',
+          '--remote-components', 'ejs:github',
           '--ffmpeg-location', ffmpegPath,
           '-o', outputTemplate,
           '--no-warnings',
@@ -299,10 +301,14 @@ async function downloadMusicMp3(result) {
         break;
       } catch (error) {
         lastError = error;
-        if (!/403|forbidden|sign.?in|confirm you.?re not a bot/i.test(String(error.message || error))) throw error;
+        attemptErrors.push(`${client}: ${error.message || error}`);
+        if (!/403|forbidden|sign.?in|confirm you.?re not a bot|challenge|po token/i.test(String(error.message || error))) throw error;
       }
     }
-    if (lastError) throw lastError;
+    if (lastError) {
+      lastError.message = `All YouTube download attempts failed. ${attemptErrors.join(' | ')}`;
+      throw lastError;
+    }
     const outputFiles = await fs.readdir(tempDir);
     const outputFile = outputFiles.find((file) => file.toLowerCase().endsWith('.mp3'));
     if (!outputFile) throw new Error('MP3 fayli yaratilmadi.');
@@ -871,7 +877,8 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
     });
   } catch (error) {
     console.error("DETAILED_RUNTIME_ERROR:", error);
-    return ctx.reply('Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.');
+    const detail = isAdmin(ctx) ? `\n\nTexnik sabab: ${escapeHtml(String(error.message || error).slice(0, 900))}` : '';
+    return ctx.reply(`Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${detail}`, replyOptions());
   } finally {
     try {
       await ctx.telegram.deleteMessage(ctx.from.id, status.message_id);
