@@ -12,6 +12,8 @@ const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
+const ytdl = require('@distube/ytdl-core');
+const ffmpeg = require('ffmpeg-static');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -214,24 +216,46 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
   }
 }
 
-async function searchMusic(query) {
+function buildYoutubeSearchUrl(query, key) {
   const params = new URLSearchParams({
-    client_id: config.jamendoClientId,
-    format: 'json',
-    limit: '8',
-    namesearch: query,
-    audioformat: 'mp32'
+    part: 'snippet',
+    type: 'video',
+    maxResults: '8',
+    q: query,
+    key
   });
-  const response = await fetchWithTimeout(`https://api.jamendo.com/v3.0/tracks/?${params}`);
-  if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
+  return `https://www.googleapis.com/youtube/v3/search?${params.toString()}`;
+}
+
+function normalizeYouTubeSearchResult(item) {
+  const videoId = item?.id?.videoId || item?.id || '';
+  const title = item?.snippet?.title || 'Noma\'lum musiqa';
+  const artist = item?.snippet?.channelTitle || 'Noma\'lum artist';
+  const thumbnail = item?.snippet?.thumbnails?.high?.url || item?.snippet?.thumbnails?.default?.url || '';
+  return {
+    id: String(videoId),
+    title: String(title).replace(/\s*\([^)]*\)\s*$/, '').trim() || 'Noma\'lum musiqa',
+    artist: String(artist).trim() || 'Noma\'lum artist',
+    duration: '',
+    thumbnail,
+    downloadUrl: videoId ? `https://www.youtube.com/watch?v=${videoId}` : ''
+  };
+}
+
+async function searchMusic(query) {
+  const key = config.youtubeApiKey;
+  if (!key) throw new Error('YouTube API kaliti sozlanmagan.');
+
+  const response = await fetchWithTimeout(buildYoutubeSearchUrl(query, key));
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`YouTube qidiruvi ishlamadi: ${errorText || response.statusText}`);
+  }
+
   const payload = await response.json();
-  return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
-    id: String(item.id),
-    title: item.name || 'Noma\'lum musiqa',
-    artist: item.artist_name || 'Noma\'lum artist',
-    duration: formatMusicDuration(item.duration),
-    downloadUrl: item.audiodownload
-  }));
+  return (payload.items || [])
+    .filter((item) => item?.id?.videoId)
+    .map(normalizeYouTubeSearchResult);
 }
 
 function formatMusicDuration(value) {
@@ -253,23 +277,21 @@ async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
   try {
-    if (!isHttpUrl(result.downloadUrl)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
+    const videoId = result?.id || new URL(result?.downloadUrl || '').searchParams.get('v');
+    if (!videoId) throw new Error('YouTube video identifikatori topilmadi.');
 
-    let response;
-    let lastError = null;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        response = await fetchWithTimeout(result.downloadUrl, {}, 30000);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        if (!response.body) throw new Error('Musiqa faylida ma\'lumot yo\'q.');
-        await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt === 2) throw error;
-        await fs.rm(tempDir, { recursive: true, force: true });
+    const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+      highWaterMark: 1 << 25,
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0'
+        }
       }
-    }
+    });
+
+    await pipeline(stream, fsSync.createWriteStream(outputPath));
 
     const stats = await fs.stat(outputPath);
     if (!stats.size || stats.size < 1024) throw new Error('Musiqa fayli yetarli emas yoki buzilgan.');
@@ -1387,16 +1409,26 @@ async function safeAnswerCbQuery(ctx) {
   try { await ctx.answerCbQuery(); } catch {}
 }
 
+module.exports = {
+  buildYoutubeSearchUrl,
+  normalizeYouTubeSearchResult,
+  searchMusic,
+  downloadMusicMp3,
+  formatMusicDuration
+};
+
 async function startBot() {
   await hydrateSettings();
   await bot.launch();
   console.log('Movie bot ishga tushdi.');
 }
 
-startBot().catch((error) => {
-  console.error('Bot startup failed:', error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  startBot().catch((error) => {
+    console.error('Bot startup failed:', error);
+    process.exitCode = 1;
+  });
+}
 
 process.once('SIGINT', async () => { bot.stop('SIGINT'); await mongoose.disconnect(); });
 process.once('SIGTERM', async () => { bot.stop('SIGTERM'); await mongoose.disconnect(); });
