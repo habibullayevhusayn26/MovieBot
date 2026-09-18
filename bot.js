@@ -9,10 +9,9 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
-const YTDlpWrap = require('yt-dlp-wrap').default;
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
-process.env.FFMPEG_PATH = require('ffmpeg-static');
-const ffmpegPath = process.env.FFMPEG_PATH;
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -206,39 +205,25 @@ function isHttpUrl(value) {
 }
 
 async function searchMusic(query) {
-  if (!config.youtubeApiKey) throw new Error('Musiqa qidiruvi hali sozlanmagan.');
-  const params = new URLSearchParams({
-    part: 'snippet',
-    q: query,
-    type: 'video',
-    maxResults: '8',
-    videoCategoryId: '10',
-    key: config.youtubeApiKey
-  });
-  const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`);
+  const params = new URLSearchParams({ q: query, limit: '8' });
+  const response = await fetch(`https://api.deezer.com/search?${params}`);
   if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
   const payload = await response.json();
-  const items = payload.items || [];
-  const ids = items.map((item) => item.id?.videoId).filter(Boolean);
-  if (!ids.length) return [];
-  const detailsParams = new URLSearchParams({
-    part: 'contentDetails',
-    id: ids.join(','),
-    key: config.youtubeApiKey
-  });
-  const detailsResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?${detailsParams}`);
-  const detailsPayload = detailsResponse.ok ? await detailsResponse.json() : { items: [] };
-  const durations = new Map((detailsPayload.items || []).map((item) => [
-    item.id,
-    formatMusicDuration(item.contentDetails?.duration)
-  ]));
-  return items.map((item) => ({
-    ...item,
-    duration: durations.get(item.id?.videoId) || ''
+  return (payload.data || []).filter((item) => item.preview).map((item) => ({
+    id: String(item.id),
+    title: item.title || 'Noma\'lum musiqa',
+    artist: item.artist?.name || 'Noma\'lum artist',
+    duration: formatMusicDuration(item.duration),
+    previewUrl: item.preview
   }));
 }
 
 function formatMusicDuration(value) {
+  if (typeof value === 'number') {
+    const minutes = Math.floor(value / 60);
+    const seconds = value % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
   const match = String(value || '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
   if (!match) return '';
   const hours = Number(match[1] || 0);
@@ -248,79 +233,14 @@ function formatMusicDuration(value) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-let ytDlpPromise;
-
-async function getYtDlp() {
-  if (!ytDlpPromise) {
-    ytDlpPromise = (async () => {
-      const binaryName = process.platform === 'win32' ? 'yt-dlp-nightly.exe' : 'yt-dlp-nightly';
-      const binaryPath = path.join(os.tmpdir(), binaryName);
-      if (!fsSync.existsSync(binaryPath)) {
-        try {
-          await YTDlpWrap.downloadFromGithub(binaryPath, 'nightly', process.platform);
-        } catch (nightlyError) {
-          console.error('yt-dlp nightly download failed, using stable:', nightlyError.message);
-          await YTDlpWrap.downloadFromGithub(binaryPath);
-        }
-      }
-      return new YTDlpWrap(binaryPath);
-    })().catch((error) => {
-      ytDlpPromise = undefined;
-      throw error;
-    });
-  }
-  return ytDlpPromise;
-}
-
 async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
-  const outputTemplate = path.join(tempDir, 'music.%(ext)s');
-  const videoUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
+  const outputPath = path.join(tempDir, 'music.mp3');
   try {
-    const ytDlp = await getYtDlp();
-    const clientAttempts = ['web_safari', 'mweb', 'android_vr', 'web'];
-    const attemptErrors = [];
-    let lastError;
-    for (const client of clientAttempts) {
-      try {
-        const args = [
-          videoUrl,
-          '--no-playlist',
-          '--extractor-args', `youtube:player_client=${client}`,
-          '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-          '-f', 'bestaudio[ext=m4a]/bestaudio/best',
-          '-x',
-          '--audio-format', 'mp3',
-          '--audio-quality', '96K',
-          '--concurrent-fragments', '4',
-          '--retries', '3',
-          '--fragment-retries', '3',
-          '--socket-timeout', '30',
-          '--js-runtimes', 'node',
-          '--remote-components', 'ejs:github',
-          '--ffmpeg-location', ffmpegPath,
-          '-o', outputTemplate,
-          '--no-warnings',
-          '--no-progress'
-        ];
-        if (config.youtubeCookiesFile) args.push('--cookies', config.youtubeCookiesFile);
-        await ytDlp.execPromise(args);
-        lastError = undefined;
-        break;
-      } catch (error) {
-        lastError = error;
-        attemptErrors.push(`${client}: ${error.message || error}`);
-        if (!/403|forbidden|sign.?in|confirm you.?re not a bot|challenge|po token/i.test(String(error.message || error))) throw error;
-      }
-    }
-    if (lastError) {
-      lastError.message = `All YouTube download attempts failed. ${attemptErrors.join(' | ')}`;
-      throw lastError;
-    }
-    const outputFiles = await fs.readdir(tempDir);
-    const outputFile = outputFiles.find((file) => file.toLowerCase().endsWith('.mp3'));
-    if (!outputFile) throw new Error('MP3 fayli yaratilmadi.');
-    const outputPath = path.join(tempDir, outputFile);
+    if (!isHttpUrl(result.previewUrl)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
+    const response = await fetch(result.previewUrl);
+    if (!response.ok || !response.body) throw new Error('Musiqa faylini yuklab bo\'lmadi.');
+    await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
     const title = result.title || 'Noma\'lum musiqa';
     const artist = result.artist || 'Noma\'lum artist';
     const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
@@ -840,11 +760,12 @@ async function replyMusicResults(ctx, query) {
     const items = await searchMusic(query);
     if (!items.length) return ctx.reply('Musiqa topilmadi. Boshqa nom yoki artist yuboring:', replyOptions());
     const results = items.map((item) => ({
-      videoId: item.id?.videoId,
-      title: item.snippet?.title || 'Noma\'lum musiqa',
-      artist: item.snippet?.channelTitle || 'Noma\'lum artist',
-      duration: item.duration || ''
-    })).filter((item) => item.videoId);
+      id: item.id,
+      title: item.title,
+      artist: item.artist,
+      duration: item.duration,
+      previewUrl: item.previewUrl
+    }));
     ctx.session = { step: 'music_pick', musicResults: results };
     const rows = [];
     for (let index = 0; index < results.length; index += 5) {
@@ -1425,7 +1346,6 @@ async function safeAnswerCbQuery(ctx) {
 async function startBot() {
   await hydrateSettings();
   await bot.launch();
-  getYtDlp().catch((error) => console.error('yt-dlp prepare failed:', error.message));
   console.log('Movie bot ishga tushdi.');
 }
 
