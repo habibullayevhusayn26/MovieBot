@@ -253,8 +253,16 @@ let ytDlpPromise;
 async function getYtDlp() {
   if (!ytDlpPromise) {
     ytDlpPromise = (async () => {
-      const binaryPath = path.join(os.tmpdir(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
-      if (!fsSync.existsSync(binaryPath)) await YTDlpWrap.downloadFromGithub(binaryPath);
+      const binaryName = process.platform === 'win32' ? 'yt-dlp-nightly.exe' : 'yt-dlp-nightly';
+      const binaryPath = path.join(os.tmpdir(), binaryName);
+      if (!fsSync.existsSync(binaryPath)) {
+        try {
+          await YTDlpWrap.downloadFromGithub(binaryPath, 'nightly', process.platform);
+        } catch (nightlyError) {
+          console.error('yt-dlp nightly download failed, using stable:', nightlyError.message);
+          await YTDlpWrap.downloadFromGithub(binaryPath);
+        }
+      }
       return new YTDlpWrap(binaryPath);
     })().catch((error) => {
       ytDlpPromise = undefined;
