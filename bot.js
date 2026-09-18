@@ -716,7 +716,7 @@ async function replyMusicResults(ctx, query) {
     const items = await searchMusic(query);
     if (!items.length) return ctx.reply('Musiqa topilmadi. Boshqa nom yoki artist yuboring:', replyOptions());
     const rows = items.map((item) => {
-      const title = item.snippet?.title || 'Noma\'lum musiqa';
+      const title = item.snippet?.title || 'Noma\'lum musiqa.';
       const videoId = item.id?.videoId;
       return Markup.button.url(`🎧 ${title.slice(0, 55)}`, `https://youtu.be/${videoId}`);
     });
