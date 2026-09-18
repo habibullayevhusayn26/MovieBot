@@ -266,7 +266,6 @@ async function getYtDlp() {
 async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
   const outputTemplate = path.join(tempDir, 'music.%(ext)s');
-  const outputPath = path.join(tempDir, 'music.mp3');
   const videoUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
   try {
     const ytDlp = await getYtDlp();
@@ -277,14 +276,21 @@ async function downloadMusicMp3(result) {
       '-f', 'bestaudio[ext=m4a]/bestaudio/best',
       '-x',
       '--audio-format', 'mp3',
-      '--audio-quality', '5',
+      '--audio-quality', '128K',
       '--concurrent-fragments', '4',
+      '--retries', '3',
+      '--fragment-retries', '3',
+      '--socket-timeout', '30',
+      '--js-runtimes', 'node',
       '--ffmpeg-location', ffmpegPath,
       '-o', outputTemplate,
       '--no-warnings',
       '--no-progress'
     ]);
-    if (!fsSync.existsSync(outputPath)) throw new Error('MP3 fayli yaratilmadi.');
+    const outputFiles = await fs.readdir(tempDir);
+    const outputFile = outputFiles.find((file) => file.toLowerCase().endsWith('.mp3'));
+    if (!outputFile) throw new Error('MP3 fayli yaratilmadi.');
+    const outputPath = path.join(tempDir, outputFile);
     const title = result.title || 'Noma\'lum musiqa';
     const artist = result.artist || 'Noma\'lum artist';
     const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
