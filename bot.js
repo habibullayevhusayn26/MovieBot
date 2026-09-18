@@ -130,7 +130,8 @@ function adminKeyboard() {
     [
       Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list'),
       Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
-    ]
+    ],
+    [Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]
   ]);
 }
 
@@ -272,11 +273,11 @@ function movieCaption(movie, views, includeViews = true) {
   const genre = String(movie.genre || '').trim();
   const language = String(movie.language || '').trim();
   const languageFlag = { "o'zbek": '🇺🇿', uzbek: '🇺🇿', rus: '🇷🇺', russian: '🇷🇺', ingliz: '🇬🇧', english: '🇬🇧' }[language.toLowerCase()] || '';
-  return `<b>🎬 ${movie.title}</b>\n\n` +
-    `🔢 Kino kodi: <code>${movie.code}</code>\n` +
-    `🎭 Janri: ${genre.startsWith('#') ? genre : `#${genre}`}\n` +
-    `🌐 Tili: ${language}${languageFlag ? ` ${languageFlag}` : ''}\n` +
-    `🤖 Bot: @${config.botUsername}`;
+  return `<b><tg-emoji emoji-id="5375464961822695044">🎬</tg-emoji> ${movie.title}</b>\n\n` +
+    `<tg-emoji emoji-id="5375099322666859339">🖥</tg-emoji> Kino kodi: <code>${movie.code}</code>\n` +
+    `<tg-emoji emoji-id="5359441070201513074">🎭</tg-emoji> Janri: ${genre.startsWith('#') ? genre : `#${genre}`}\n` +
+    `<tg-emoji emoji-id="5188381825701021648">🌐</tg-emoji> Tili: ${language}${languageFlag ? ` ${languageFlag}` : ''}\n` +
+    `<tg-emoji emoji-id="4916086774649848789">🔗</tg-emoji> Bot: @${config.botUsername}`;
 }
 
 function movieLink(code) {
@@ -528,6 +529,12 @@ bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
   return ctx.reply('Admin panel', adminKeyboard());
 });
 
+bot.command('admin', (ctx) => {
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  reset(ctx);
+  return ctx.reply('Admin panel', adminKeyboard());
+});
+
 bot.action('admin:stats', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -539,6 +546,18 @@ bot.action('admin:panel', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   reset(ctx);
   return ctx.reply('Admin panel', adminKeyboard());
+});
+
+bot.action('admin:exit', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  reset(ctx);
+  try {
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+  } catch (error) {
+    console.warn('Admin panel close failed:', error.response?.description || error.message);
+  }
+  return ctx.reply('Admin paneldan chiqildi.', userKeyboard(ctx));
 });
 
 bot.action('admin:find_movie', async (ctx) => {
@@ -873,7 +892,14 @@ bot.on('text', async (ctx) => {
     ctx.session.step = 'movie_video';
     return ctx.reply('Kino videosini yuboring:');
   }
-  if (/^\d+$/.test(value)) return sendMovie(ctx, value);
+  if (/^\d+$/.test(value)) {
+    if (isAdmin(ctx)) {
+      const movie = await Movie.findOne({ code: value }).lean();
+      if (!movie) return ctx.reply('Kino topilmadi. Boshqa kod yuboring:', adminKeyboard());
+      return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
+    }
+    return sendMovie(ctx, value);
+  }
   return ctx.reply(configuredMessage('invalidCode', ctx, { code: value }), replyOptions());
 });
 
