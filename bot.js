@@ -14,6 +14,25 @@ const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
 const ytdl = require('@distube/ytdl-core');
 const ffmpeg = require('ffmpeg-static');
+const ytDlpBinaryPath = path.join('/tmp', 'yt-dlp');
+let ytDlpReadyPromise;
+
+async function getYtDlp() {
+  if (!ytDlpReadyPromise) {
+    ytDlpReadyPromise = (async () => {
+      const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
+      if (!fsSync.existsSync(ytDlpBinaryPath)) {
+        await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
+      }
+      fsSync.chmodSync(ytDlpBinaryPath, 0o755);
+      return new YTDlpWrap(ytDlpBinaryPath);
+    })().catch((error) => {
+      ytDlpReadyPromise = undefined;
+      throw new Error(`yt-dlp ishga tushmadi: ${error.message || error}`);
+    });
+  }
+  return ytDlpReadyPromise;
+}
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -379,8 +398,7 @@ async function downloadMusicMp3(result) {
       : localCookiesPath;
 
     if (isYoutubeUrl(rawUrl)) {
-      const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
-      const ytDlp = new YTDlpWrap();
+      const ytDlp = await getYtDlp();
       const ytDlpArgs = [
         rawUrl,
         '--cookies', cookiesPath,
