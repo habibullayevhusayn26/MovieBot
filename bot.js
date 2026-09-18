@@ -831,8 +831,9 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
   try {
     music = await downloadMusicMp3(result);
     const fileBuffer = await fs.readFile(music.filePath);
+    const audioInput = Input.fromBuffer(fileBuffer, `${music.title}.mp3`);
     try {
-      await ctx.telegram.sendAudio(ctx.from.id, { source: fileBuffer, filename: `${music.title}.mp3` }, {
+      await ctx.telegram.sendAudio(ctx.from.id, audioInput, {
         title: music.title,
         performer: music.artist,
         caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
@@ -841,7 +842,7 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
       });
     } catch (audioError) {
       console.error('AUDIO_UPLOAD_FALLBACK_ERROR:', audioError);
-      await ctx.telegram.sendDocument(ctx.from.id, { source: fileBuffer, filename: `${music.title}.mp3` }, {
+      await ctx.telegram.sendDocument(ctx.from.id, audioInput, {
         caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
         parse_mode: 'HTML',
         protect_content: shouldProtectContent(ctx.from.id)
