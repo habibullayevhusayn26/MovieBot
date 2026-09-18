@@ -696,7 +696,7 @@ bot.action('latest_movies', async (ctx) => {
   const buttons = movies.map((movie) => [Markup.button.callback(
     `🎬 ${movie.title} (${movie.code})`, `latest:movie:${movie.code}`
   )]);
-  return ctx.reply('🆕 So\'nggi kinolar:', Markup.inlineKeyboard(buttons));
+  return ctx.reply('<tg-emoji emoji-id="5233588456730427459">🆕</tg-emoji> So\'nggi kinolar:', replyOptions(Markup.inlineKeyboard(buttons).reply_markup));
 });
 
 bot.action(/^latest:movie:(\d+)$/, async (ctx) => {
