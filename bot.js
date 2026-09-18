@@ -5,6 +5,13 @@ process.env.TZ = config.timezone;
 const mongoose = require('mongoose');
 const express = require('express');
 const { Telegraf, Markup, session, Input } = require('telegraf');
+const fs = require('fs/promises');
+const fsSync = require('fs');
+const os = require('os');
+const path = require('path');
+const YTDlpWrap = require('yt-dlp-wrap').default;
+const NodeID3 = require('node-id3');
+const ffmpegPath = require('ffmpeg-static');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -211,6 +218,52 @@ async function searchMusic(query) {
   if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
   const payload = await response.json();
   return payload.items || [];
+}
+
+let ytDlpPromise;
+
+async function getYtDlp() {
+  if (!ytDlpPromise) {
+    ytDlpPromise = (async () => {
+      const binaryPath = path.join(os.tmpdir(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+      if (!fsSync.existsSync(binaryPath)) await YTDlpWrap.downloadFromGithub(binaryPath);
+      return new YTDlpWrap(binaryPath);
+    })().catch((error) => {
+      ytDlpPromise = undefined;
+      throw error;
+    });
+  }
+  return ytDlpPromise;
+}
+
+async function downloadMusicMp3(result) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
+  const outputTemplate = path.join(tempDir, 'music.%(ext)s');
+  const outputPath = path.join(tempDir, 'music.mp3');
+  const videoUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
+  try {
+    const ytDlp = await getYtDlp();
+    await ytDlp.execPromise([
+      videoUrl,
+      '--no-playlist',
+      '-f', 'bestaudio/best',
+      '-x',
+      '--audio-format', 'mp3',
+      '--audio-quality', '0',
+      '--ffmpeg-location', ffmpegPath,
+      '-o', outputTemplate,
+      '--no-warnings',
+      '--no-progress'
+    ]);
+    const title = result.title || 'Noma\'lum musiqa';
+    const artist = result.artist || 'Noma\'lum artist';
+    const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
+    if (tagResult !== true) throw new Error('MP3 metadata yozilmadi.');
+    return { filePath: outputPath, tempDir, title, artist };
+  } catch (error) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function adminKeyboard() {
@@ -715,20 +768,52 @@ async function replyMusicResults(ctx, query) {
   try {
     const items = await searchMusic(query);
     if (!items.length) return ctx.reply('Musiqa topilmadi. Boshqa nom yoki artist yuboring:', replyOptions());
-    const rows = items.map((item) => {
-      const title = item.snippet?.title || 'Noma\'lum musiqa.';
-      const videoId = item.id?.videoId;
-      return Markup.button.url(`🎧 ${title.slice(0, 55)}`, `https://youtu.be/${videoId}`);
-    });
-    return ctx.reply(`<b>🎵 Qidiruv natijalari:</b>\n\n${rows.map((button) => button.text).join('\n')}`, {
+    const results = items.map((item) => ({
+      videoId: item.id?.videoId,
+      title: item.snippet?.title || 'Noma\'lum musiqa',
+      artist: item.snippet?.channelTitle || 'Noma\'lum artist'
+    })).filter((item) => item.videoId);
+    ctx.session = { step: 'music_pick', musicResults: results };
+    const rows = results.map((result, index) => [Markup.button.callback(
+      `${index + 1}. ${result.title.slice(0, 55)}`,
+      `music:pick:${index}`
+    )]);
+    const list = results.map((result, index) => `${index + 1}. ${escapeHtml(result.title)} — ${escapeHtml(result.artist)}`).join('\n');
+    return ctx.reply(`<b>🎵 Qidiruv natijalari:</b>\n\n${list}\n\nRaqamini tanlang:`, {
       parse_mode: 'HTML',
-      reply_markup: Markup.inlineKeyboard(rows.map((button) => [button])).reply_markup
+      reply_markup: Markup.inlineKeyboard(rows).reply_markup
     });
   } catch (error) {
     console.error('Music search failed:', error.message);
     return ctx.reply(error.message, replyOptions());
   }
 }
+
+bot.action(/^music:pick:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const index = Number(ctx.match[1]);
+  const result = ctx.session?.musicResults?.[index];
+  if (!result) return ctx.reply('Musiqa tanlovi eskirgan. Qaytadan qidiring:', replyOptions());
+  const status = await ctx.reply('⏳ MP3 tayyorlanmoqda...');
+  let music;
+  try {
+    music = await downloadMusicMp3(result);
+    await ctx.telegram.sendAudio(ctx.from.id, Input.fromLocalFile(music.filePath), {
+      title: music.title,
+      performer: music.artist,
+      caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
+      parse_mode: 'HTML',
+      protect_content: shouldProtectContent(ctx.from.id)
+    });
+  } catch (error) {
+    console.error('Music MP3 conversion failed:', error.message);
+    return ctx.reply('Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.');
+  } finally {
+    try { await ctx.telegram.deleteMessage(ctx.from.id, status.message_id); } catch {}
+    if (music?.tempDir) await fs.rm(music.tempDir, { recursive: true, force: true });
+  }
+  return ctx.reply('✅ Musiqa yuborildi.');
+});
 
 bot.action('latest_movies', async (ctx) => {
   await ctx.answerCbQuery();
