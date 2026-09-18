@@ -204,6 +204,16 @@ function isHttpUrl(value) {
   }
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function searchMusic(query) {
   const params = new URLSearchParams({
     client_id: config.jamendoClientId,
@@ -212,7 +222,7 @@ async function searchMusic(query) {
     namesearch: query,
     audioformat: 'mp32'
   });
-  const response = await fetch(`https://api.jamendo.com/v3.0/tracks/?${params}`);
+  const response = await fetchWithTimeout(`https://api.jamendo.com/v3.0/tracks/?${params}`);
   if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
   const payload = await response.json();
   return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
@@ -244,16 +254,33 @@ async function downloadMusicMp3(result) {
   const outputPath = path.join(tempDir, 'music.mp3');
   try {
     if (!isHttpUrl(result.downloadUrl)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
-    const response = await fetch(result.downloadUrl);
-    if (!response.ok || !response.body) throw new Error('Musiqa faylini yuklab bo\'lmadi.');
-    await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
+
+    let response;
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        response = await fetchWithTimeout(result.downloadUrl, {}, 30000);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.body) throw new Error('Musiqa faylida ma\'lumot yo\'q.');
+        await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2) throw error;
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    }
+
+    const stats = await fs.stat(outputPath);
+    if (!stats.size || stats.size < 1024) throw new Error('Musiqa fayli yetarli emas yoki buzilgan.');
+
     const title = result.title || 'Noma\'lum musiqa';
     const artist = result.artist || 'Noma\'lum artist';
     const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
     if (tagResult !== true) throw new Error('MP3 metadata yozilmadi.');
     return { filePath: outputPath, tempDir, title, artist };
   } catch (error) {
-    console.error("DETAILED_RUNTIME_ERROR:", error);
+    console.error('DETAILED_RUNTIME_ERROR:', error);
     try {
       await fs.rm(tempDir, { recursive: true, force: true });
     } catch (cleanupError) {
@@ -803,15 +830,25 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
   let music;
   try {
     music = await downloadMusicMp3(result);
-    await ctx.telegram.sendAudio(ctx.from.id, Input.fromLocalFile(music.filePath), {
-      title: music.title,
-      performer: music.artist,
-      caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
-      parse_mode: 'HTML',
-      protect_content: shouldProtectContent(ctx.from.id)
-    });
+    const fileBuffer = await fs.readFile(music.filePath);
+    try {
+      await ctx.telegram.sendAudio(ctx.from.id, { source: fileBuffer, filename: `${music.title}.mp3` }, {
+        title: music.title,
+        performer: music.artist,
+        caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
+        parse_mode: 'HTML',
+        protect_content: shouldProtectContent(ctx.from.id)
+      });
+    } catch (audioError) {
+      console.error('AUDIO_UPLOAD_FALLBACK_ERROR:', audioError);
+      await ctx.telegram.sendDocument(ctx.from.id, { source: fileBuffer, filename: `${music.title}.mp3` }, {
+        caption: `<b>${escapeHtml(music.title)}</b>\n🎤 ${escapeHtml(music.artist)}`,
+        parse_mode: 'HTML',
+        protect_content: shouldProtectContent(ctx.from.id)
+      });
+    }
   } catch (error) {
-    console.error("DETAILED_RUNTIME_ERROR:", error);
+    console.error('DETAILED_RUNTIME_ERROR:', error);
     const detail = isAdmin(ctx) ? `\n\nTexnik sabab: ${escapeHtml(String(error.message || error).slice(0, 900))}` : '';
     return ctx.reply(`Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${detail}`, replyOptions());
   } finally {
