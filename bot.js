@@ -328,54 +328,104 @@ async function downloadRemoteFileToPath(url, outputPath) {
 }
 
 async function downloadMusicMp3(result) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
+  const tempDir = await fs.mkdtemp(path.join('/tmp', 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
-  try {
-    if (isYoutubeUrl(result.downloadUrl)) {
-      try {
-        const videoId = result?.id || new URL(result.downloadUrl).searchParams.get('v');
-        if (!videoId) throw new Error('YouTube video identifikatori topilmadi.');
 
-        const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
-          filter: 'audioonly',
-          quality: 'highestaudio',
-          highWaterMark: 1 << 25,
-          requestOptions: {
-            headers: {
-              'User-Agent': 'Mozilla/5.0'
-            }
+  try {
+    const rawUrl = String(result?.downloadUrl || '');
+    const title = result?.title || 'Noma\'lum musiqa';
+    const artist = result?.artist || 'Noma\'lum artist';
+    const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
+    const preferAlternateSource = rawUrl && primaryProxyPattern.test(rawUrl);
+
+    let chosenUrl = rawUrl;
+    if (preferAlternateSource) {
+      const fallbackId = result?.videoId || result?.id || '';
+      const fallbackUrl = fallbackId ? `https://deezer.com/${fallbackId}` : `https://deezer.com/search/${encodeURIComponent(`${artist} ${title}`)}`;
+      chosenUrl = fallbackUrl;
+    }
+
+    let finalUrl = chosenUrl;
+    let finalHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: '*/*',
+      Referer: 'https://www.youtube.com/',
+      Origin: 'https://www.youtube.com'
+    };
+
+    if (preferAlternateSource) {
+      try {
+        const axios = require('axios');
+        const meta = await axios.get(fallbackUrl || chosenUrl, {
+          timeout: 20000,
+          headers: {
+            ...finalHeaders,
+            Accept: 'application/json,text/html,*/*'
           }
         });
 
-        await pipeline(stream, fsSync.createWriteStream(outputPath));
-      } catch (error) {
-        const message = String(error?.message || error || '');
-        if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
-          const jamendoResults = await searchMusicJamendo(`${result.artist || ''} ${result.title || ''}`.trim());
-          const fallback = jamendoResults[0];
-          if (fallback?.downloadUrl) {
-            await downloadRemoteFileToPath(fallback.downloadUrl, outputPath);
-            return {
-              filePath: outputPath,
-              tempDir,
-              title: fallback.title || result.title,
-              artist: fallback.artist || result.artist
-            };
-          }
+        const pageHtml = String(meta?.data || '');
+        const match = pageHtml.match(/https?:\/\/[^\s"']+\.mp3[^\s"']*/i) || pageHtml.match(/https?:\/\/[^\s"']+preview[^\s"']*/i);
+        if (match && match[0]) {
+          finalUrl = match[0];
         }
-        throw error;
+      } catch (metaError) {
+        console.warn('MUSIC_FALLBACK_METADATA_ERROR:', metaError.message || metaError);
       }
-    } else {
-      await downloadRemoteFileToPath(result.downloadUrl, outputPath);
+    }
+
+    if (!finalUrl || !/^https?:\/\//i.test(finalUrl)) {
+      throw new Error('Musiqa yuklash manzili topilmadi.');
+    }
+
+    try {
+      const axios = require('axios');
+      const response = await axios({
+        url: finalUrl,
+        method: 'GET',
+        responseType: 'stream',
+        timeout: 20000,
+        headers: finalHeaders,
+        maxRedirects: 5
+      });
+
+      const writer = fsSync.createWriteStream(outputPath);
+      await new Promise((resolve, reject) => {
+        response.data.pipe(writer);
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+    } catch (streamError) {
+      const statusText = String(streamError?.response?.status || streamError?.statusCode || streamError?.code || '');
+      if (/429|Too Many Requests|rate limit|quota/i.test(statusText + ' ' + String(streamError))) {
+        const fallbackDownloadUrl = rawUrl && !primaryProxyPattern.test(rawUrl) ? rawUrl : '';
+        if (fallbackDownloadUrl) {
+          const resp = await fetchWithTimeout(fallbackDownloadUrl, {
+            headers: finalHeaders
+          }, 20000);
+          if (resp.ok && resp.body) {
+            await pipeline(Readable.fromWeb(resp.body), fsSync.createWriteStream(outputPath));
+          } else {
+            throw new Error('Musiqa faylini yuklab bo\'lmadi: 429 fallback ham ishlamadi.');
+          }
+        } else {
+          throw new Error(`Status code: 429 (Too Many Requests)`);
+        }
+      } else {
+        throw streamError;
+      }
     }
 
     const stats = await fs.stat(outputPath);
-    if (!stats.size || stats.size < 1024) throw new Error('Musiqa fayli yetarli emas yoki buzilgan.');
+    if (!stats.size || stats.size < 1024) {
+      throw new Error('Musiqa fayli yetarli emas yoki buzilgan.');
+    }
 
-    const title = result.title || 'Noma\'lum musiqa';
-    const artist = result.artist || 'Noma\'lum artist';
     const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
-    if (tagResult !== true) throw new Error('MP3 metadata yozilmadi.');
+    if (tagResult !== true) {
+      throw new Error('MP3 metadata yozilmadi.');
+    }
+
     return { filePath: outputPath, tempDir, title, artist };
   } catch (error) {
     console.error('DETAILED_RUNTIME_ERROR:', error);
