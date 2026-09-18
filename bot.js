@@ -12,7 +12,6 @@ const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
-const ytdl = require('@distube/ytdl-core');
 const ffmpeg = require('ffmpeg-static');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
@@ -385,22 +384,30 @@ async function downloadMusicMp3(result) {
 
       if (!ffmpeg) throw new Error('ffmpeg-static binary topilmadi.');
 
-      const cookieHeader = (await fs.readFile(cookiesPath, 'utf8'))
+      const cookies = (await fs.readFile(cookiesPath, 'utf8'))
         .split(/\r?\n/)
         .filter((line) => line && !line.startsWith('#'))
         .map((line) => line.split('\t'))
         .filter((fields) => fields.length >= 7 && fields[5] && fields[6])
-        .map((fields) => `${fields[5]}=${fields[6]}`)
-        .join('; ');
+        .map((fields) => ({
+          key: fields[5],
+          value: fields[6],
+          domain: fields[0],
+          path: fields[2] || '/',
+          secure: fields[3].toUpperCase() === 'TRUE',
+          expires: fields[4] && fields[4] !== '0' ? Number(fields[4]) : 'Infinity'
+        }));
 
-      const audioStream = ytdl(rawUrl, {
-        quality: 'highestaudio',
-        requestOptions: {
-          headers: {
-            cookie: cookieHeader
-          }
-        }
+      const ytstream = require('yt-stream');
+      const ytAgent = new ytstream.YTStreamAgent(cookies);
+      ytstream.setGlobalAgent(ytAgent);
+      const ytAudio = await ytstream.stream(rawUrl, {
+        type: 'audio',
+        quality: 'high',
+        download: true,
+        highWaterMark: 32 * 1024 * 1024
       });
+      const audioStream = ytAudio.stream;
       const { spawn } = require('child_process');
       const ffmpegProcess = spawn(ffmpeg, [
         '-hide_banner',
@@ -427,8 +434,6 @@ async function downloadMusicMp3(result) {
         ffmpegProcess.stderr.on('data', (chunk) => { ffmpegError += chunk; });
         audioStream.on('error', fail);
         ffmpegProcess.stdin.on('error', fail);
-        ffmpegProcess.stdout.pipe(fsSync.createWriteStream(outputPath))
-          .on('error', fail);
         ffmpegProcess.on('error', fail);
         ffmpegProcess.on('close', (code) => {
           if (settled) return;
