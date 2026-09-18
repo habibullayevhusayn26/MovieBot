@@ -374,12 +374,11 @@ async function downloadMusicMp3(result) {
 
     if (isYoutubeUrl(rawUrl)) {
       const axios = require('axios');
-      const cobaltResponse = await axios.post('https://api.cobalt.tools/', {
+      const cobaltResponse = await axios.post('https://cobalt.tools', {
         url: rawUrl,
         downloadMode: 'audio',
         audioFormat: 'mp3',
-        audioBitrate: '192',
-        youtubeVideoCodec: 'h264'
+        audioBitrate: '192'
       }, {
         headers: {
           Accept: 'application/json',
