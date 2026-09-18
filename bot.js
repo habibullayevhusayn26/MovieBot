@@ -303,6 +303,10 @@ async function searchMusicJamendo(query) {
   }
 
   const payload = await response.json();
+  if (payload.headers?.status === 'failed' || payload.headers?.code) {
+    throw new Error(`Jamendo API xatosi (${payload.headers.code}): ${payload.headers.error_message || 'noma\'lum xato'}`);
+  }
+
   return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
     id: String(item.id),
     title: item.name || 'Noma\'lum musiqa',
