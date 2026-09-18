@@ -195,7 +195,7 @@ function welcomeMarkup(ctx) {
   const channel = data.settings.movieChannel;
   const rows = [];
   if (channel?.username) rows.push([{
-    text: '📺 Kino kodlari',
+    text: '🎥 Kino kodlari',
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
@@ -338,7 +338,7 @@ async function sendMovie(ctx, code) {
   if (!movie) return ctx.reply(configuredMessage('invalidCode', ctx, { code: normalizedCode }), replyOptions());
   const channel = data.settings.movieChannel;
   const buttonRows = channel?.username
-    ? [[Markup.button.url('📺 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
+    ? [[Markup.button.url('🎥 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
   return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
     caption: movieCaption(movie, movie.views),
