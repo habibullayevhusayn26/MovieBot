@@ -308,7 +308,7 @@ async function notifyNewSubscriber(ctx) {
   await bot.telegram.sendMessage(
     ADMIN_TG_ID,
     `Botga yangi obunachi qo'shildi: ${profileLink}\nObunachilar soni: ${count}`,
-    { parse_mode: 'HTML' }
+    { parse_mode: 'HTML', protect_content: true }
   );
 }
 
@@ -343,7 +343,8 @@ async function sendMovie(ctx, code) {
   return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
     caption: movieCaption(movie, movie.views),
     parse_mode: 'HTML',
-    reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
+    reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup,
+    protect_content: true
   });
 }
 
@@ -372,7 +373,8 @@ async function publishMovieAdvertisement(movie, replaceMedia = false) {
   const extra = {
     caption,
     parse_mode: 'HTML',
-    reply_markup: replyMarkup
+    reply_markup: replyMarkup,
+    protect_content: true
   };
   const message = movie.promoType === 'photo'
     ? await bot.telegram.sendPhoto(channel.id, movie.promoFileId, extra)
@@ -418,6 +420,7 @@ function broadcastExtra(broadcast) {
     ? Markup.inlineKeyboard(broadcast.buttons).reply_markup
     : undefined;
   const commonExtra = replyMarkup ? { reply_markup: replyMarkup } : {};
+  commonExtra.protect_content = true;
   const textExtra = {
     ...commonExtra,
     ...(broadcast.captionEntities?.length
@@ -481,7 +484,7 @@ async function sendBroadcast(ctx) {
     }
     processed += 1;
     if (processed % 25 === 0 || processed === users.length) {
-      await ctx.telegram.sendMessage(ctx.from.id, `Broadcast progress: ${processed} / ${users.length} yuborildi`);
+      await ctx.telegram.sendMessage(ctx.from.id, `Broadcast progress: ${processed} / ${users.length} yuborildi`, { protect_content: true });
     }
   }
   await Broadcast.updateOne({ _id: log._id }, { $set: { sent, failed, blocked } });
@@ -554,6 +557,12 @@ bot.use(async (ctx, next) => {
 });
 
 bot.use(session({ store: persistentSessionStore }));
+
+bot.use(async (ctx, next) => {
+  const reply = ctx.reply.bind(ctx);
+  ctx.reply = (text, extra = {}) => reply(text, { ...(extra || {}), protect_content: true });
+  return next();
+});
 
 bot.start(handleStart);
 
@@ -965,7 +974,7 @@ bot.catch(async (error, ctx) => {
   console.error(`Update ${ctx.updateType} failed:`, error.response?.description || error.message);
   await safeAnswerCbQuery(ctx);
   try {
-    if (ctx.from?.id) await ctx.telegram.sendMessage(ctx.from.id, '⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.');
+    if (ctx.from?.id) await ctx.telegram.sendMessage(ctx.from.id, '⚠️ Texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.', { protect_content: true });
   } catch (replyError) {
     console.error('Error notification failed:', replyError.response?.description || replyError.message);
   }
