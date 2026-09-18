@@ -229,7 +229,7 @@ function buildYoutubeSearchUrl(query, key) {
   const params = new URLSearchParams({
     part: 'snippet',
     type: 'video',
-    maxResults: '8',
+    maxResults: '10',
     q: query,
     key
   });
@@ -251,11 +251,15 @@ function normalizeYouTubeSearchResult(item) {
   };
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function searchMusicJamendo(query) {
   const params = new URLSearchParams({
     client_id: process.env.JAMENDO_CLIENT_ID || config.youtubeApiKey,
     format: 'json',
-    limit: '8',
+    limit: '10',
     namesearch: query,
     audioformat: 'mp32'
   });
@@ -1003,7 +1007,14 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
   } catch (error) {
     console.error('DETAILED_RUNTIME_ERROR:', error);
     const detail = isAdmin(ctx) ? `\n\nTexnik sabab: ${escapeHtml(String(error.message || error).slice(0, 900))}` : '';
-    return ctx.reply(`Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${detail}`, replyOptions());
+    const fallbackLink = result?.downloadUrl ? `\n\nMusiqa havolasi: ${escapeHtml(String(result.downloadUrl))}` : '';
+    try {
+      await delay(3000);
+      await ctx.reply(`Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${fallbackLink}${detail}`, replyOptions());
+    } catch (replyError) {
+      console.error('FALLBACK_REPLY_ERROR:', replyError);
+    }
+    return null;
   } finally {
     try {
       await ctx.telegram.deleteMessage(ctx.from.id, status.message_id);
