@@ -275,7 +275,7 @@ function welcomeMarkup(ctx) {
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
-  rows.push([Markup.button.callback('🆕 So\'nggi kinolar', 'latest_movies')]);
+  rows.push([{ text: '🆕 So\'nggi kinolar', callback_data: 'latest_movies', style: 'primary' }]);
   rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
   if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
   return Markup.inlineKeyboard(rows).reply_markup;
