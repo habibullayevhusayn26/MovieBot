@@ -11,7 +11,8 @@ const os = require('os');
 const path = require('path');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const NodeID3 = require('node-id3');
-const ffmpegPath = require('ffmpeg-static');
+process.env.FFMPEG_PATH = require('ffmpeg-static');
+const ffmpegPath = process.env.FFMPEG_PATH;
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -276,7 +277,7 @@ async function downloadMusicMp3(result) {
       '-f', 'bestaudio[ext=m4a]/bestaudio/best',
       '-x',
       '--audio-format', 'mp3',
-      '--audio-quality', '128K',
+      '--audio-quality', '96K',
       '--concurrent-fragments', '4',
       '--retries', '3',
       '--fragment-retries', '3',
