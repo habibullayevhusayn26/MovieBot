@@ -15,7 +15,6 @@ const botUsername = normalizeUsername(
 const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME);
 const adminTelegramId = Number(process.env.ADMIN_TG_ID);
 const mongoUri = process.env.MONGODB_URI;
-
 if (mongoUri) {
   const parsedMongoUri = new URL(mongoUri);
   if (!parsedMongoUri.searchParams.has('authSource')) {
