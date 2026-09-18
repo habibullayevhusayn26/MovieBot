@@ -400,20 +400,22 @@ async function downloadMusicMp3(result) {
     if (isYoutubeUrl(rawUrl)) {
       const ytDlp = await getYtDlp();
       const ytDlpArgs = [
-        rawUrl,
-        '--cookies', cookiesPath,
-        '--no-playlist',
-        '--ignore-config',
-        '--ignore-errors',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--audio-quality', '192K',
-        '--output', outputPath,
-        '--ffmpeg-location', ffmpeg,
-        '--no-part',
-        '--quiet',
-        '--no-warnings'
-      ];
+       rawUrl,
+  '--cookies', cookiesPath,
+  '--no-playlist',
+  '--ignore-config',
+  '--ignore-errors',
+  '--format', 'bestaudio/best', //  Faqat eng yaxshi audio formatni so'raymiz
+  '--extract-audio',
+  '--audio-format', 'mp3',
+  '--audio-quality', '192K',
+  '--output', outputPath,
+  '--ffmpeg-location', ffmpeg,
+  '--no-part',
+  '--quiet',
+  '--no-warnings'
+];
+
 
       if (!fsSync.existsSync(cookiesPath)) {
         throw new Error(`YouTube cookies.txt topilmadi: ${cookiesPath}`);
