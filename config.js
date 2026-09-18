@@ -15,6 +15,7 @@ const botUsername = normalizeUsername(
 const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME);
 const adminTelegramId = Number(process.env.ADMIN_TG_ID);
 const mongoUri = process.env.MONGODB_URI;
+const youtubeApiKey = String(process.env.YOUTUBE_API_KEY || '').trim();
 if (mongoUri) {
   const parsedMongoUri = new URL(mongoUri);
   if (!parsedMongoUri.searchParams.has('authSource')) {
@@ -35,6 +36,7 @@ if (missingSettings.length > 0) {
 
 module.exports = {
   botToken: process.env.BOT_TOKEN,
+  youtubeApiKey,
   mongoUri: process.env.MONGODB_URI,
   botUsername,
   botLink: botUsername ? `https://t.me/${botUsername}` : '',

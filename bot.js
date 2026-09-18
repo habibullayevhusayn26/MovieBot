@@ -197,6 +197,22 @@ function isHttpUrl(value) {
   }
 }
 
+async function searchMusic(query) {
+  if (!config.youtubeApiKey) throw new Error('Musiqa qidiruvi hali sozlanmagan.');
+  const params = new URLSearchParams({
+    part: 'snippet',
+    q: query,
+    type: 'video',
+    maxResults: '8',
+    videoCategoryId: '10',
+    key: config.youtubeApiKey
+  });
+  const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`);
+  if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
+  const payload = await response.json();
+  return payload.items || [];
+}
+
 function adminKeyboard() {
   const ctx = arguments[0];
   const can = (permission) => !ctx || hasPermission(ctx, permission);
@@ -275,6 +291,7 @@ function welcomeMarkup(ctx) {
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
+  rows.push([{ text: '🎵 Musiqa qidirish', callback_data: 'music:search', style: 'success' }]);
   rows.push([{ text: '🆕 So\'nggi kinolar', callback_data: 'latest_movies', style: 'danger' }]);
   rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
   if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
@@ -688,6 +705,31 @@ bot.action('help', async (ctx) => {
   return ctx.reply(configuredMessage('help', ctx), replyOptions());
 });
 
+bot.action('music:search', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.session = { step: 'music_search' };
+  return ctx.reply('🎵 Musiqa nomi yoki artistini yuboring:', replyOptions());
+});
+
+async function replyMusicResults(ctx, query) {
+  try {
+    const items = await searchMusic(query);
+    if (!items.length) return ctx.reply('Musiqa topilmadi. Boshqa nom yoki artist yuboring:', replyOptions());
+    const rows = items.map((item) => {
+      const title = item.snippet?.title || 'Noma\'lum musiqa';
+      const videoId = item.id?.videoId;
+      return Markup.button.url(`🎧 ${title.slice(0, 55)}`, `https://youtu.be/${videoId}`);
+    });
+    return ctx.reply(`<b>🎵 Qidiruv natijalari:</b>\n\n${rows.map((button) => button.text).join('\n')}`, {
+      parse_mode: 'HTML',
+      reply_markup: Markup.inlineKeyboard(rows.map((button) => [button])).reply_markup
+    });
+  } catch (error) {
+    console.error('Music search failed:', error.message);
+    return ctx.reply(error.message, replyOptions());
+  }
+}
+
 bot.action('latest_movies', async (ctx) => {
   await ctx.answerCbQuery();
   const movies = await Movie.find({}, { title: 1, code: 1 })
@@ -1076,6 +1118,10 @@ bot.on('text', async (ctx) => {
     ctx.session.broadcast.captionEntities = ctx.message.entities || [];
     ctx.session.step = 'broadcast_buttons';
     return ctx.reply('Inline tugma qo\'shasizmi?', broadcastButtonKeyboard());
+  }
+  if (step === 'music_search') {
+    reset(ctx);
+    return replyMusicResults(ctx, value);
   }
   if (step === 'broadcast_button_text') {
     ctx.session.pendingButtonText = value;
