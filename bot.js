@@ -468,7 +468,7 @@ function welcomeMarkup(ctx) {
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
-  rows.push([{ text: '🎵 Musiqa qidirish', callback_data: 'music:search', style: 'success' }]);
+  rows.push([{ text: '🎵 Musiqa qidirish (vaqtincha yopiq)', callback_data: 'music:search', style: 'success' }]);
   rows.push([{ text: '🆕 So\'nggi kinolar', callback_data: 'latest_movies', style: 'danger' }]);
   rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
   if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
@@ -884,8 +884,7 @@ bot.action('help', async (ctx) => {
 
 bot.action('music:search', async (ctx) => {
   await ctx.answerCbQuery();
-  ctx.session = { step: 'music_search' };
-  return ctx.reply('🎵 Musiqa nomi yoki artistini yuboring:', replyOptions());
+  return ctx.reply('🎵 Musiqa qidirish bo‘limi vaqtincha ishlamayapti.', replyOptions());
 });
 
 async function replyMusicResults(ctx, query) {
@@ -1028,15 +1027,7 @@ bot.command('admin', (ctx) => {
 });
 
 bot.command('music', async (ctx) => {
-  const query = String(ctx.message?.text || '')
-    .replace(/^\/music(?:@\w+)?\s*/i, '')
-    .trim();
-  if (!query) {
-    ctx.session = { step: 'music_search' };
-    return ctx.reply('🎵 Musiqa nomi yoki artistini yuboring:', replyOptions());
-  }
-  reset(ctx);
-  return replyMusicResults(ctx, query);
+  return ctx.reply('🎵 Musiqa qidirish bo‘limi vaqtincha ishlamayapti.', replyOptions());
 });
 
 bot.command('kino', async (ctx) => {
@@ -1408,7 +1399,7 @@ bot.on('text', async (ctx) => {
   }
   if (step === 'music_search') {
     reset(ctx);
-    return replyMusicResults(ctx, value);
+    return ctx.reply('🎵 Musiqa qidirish bo‘limi vaqtincha ishlamayapti.', replyOptions());
   }
   if (step === 'movie_search') {
     if (!/^\d+$/.test(value)) return ctx.reply(configuredMessage('nonNumericCode', ctx, { code: value }), replyOptions());
