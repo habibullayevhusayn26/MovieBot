@@ -105,6 +105,14 @@ function isAdminPanelActive(ctx) {
   return isAdmin(ctx) && ctx.session?.adminPanelActive === true;
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function normalizeChannel(value) {
   const trimmed = String(value || '').trim();
   return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
@@ -187,7 +195,7 @@ function welcomeMarkup(ctx) {
   const channel = data.settings.movieChannel;
   const rows = [];
   if (channel?.username) rows.push([{
-    text: '🎞 Kino kodlari',
+    text: '<tg-emoji emoji-id="5465267273373588836">📺</tg-emoji> Kino kodlari',
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
@@ -272,11 +280,36 @@ async function hydrateSettings() {
 
 async function ensureUser(ctx) {
   const telegramId = Number(ctx.from.id);
-  return User.findOneAndUpdate(
-    { telegramId },
-    { $set: { username: ctx.from.username || '', nickname: ctx.from.first_name || ctx.from.last_name || '', lastActiveAt: new Date() }, $setOnInsert: { telegramId, joinedAt: new Date() } },
-    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
-  ).lean();
+  const existingUser = await User.findOne({ telegramId }).lean();
+  const userData = {
+    username: ctx.from.username || '',
+    nickname: ctx.from.first_name || ctx.from.last_name || '',
+    lastActiveAt: new Date()
+  };
+  if (existingUser) {
+    await User.updateOne({ telegramId }, { $set: userData });
+    return { user: { ...existingUser, ...userData }, isNew: false };
+  }
+  try {
+    const user = await User.create({ telegramId, ...userData });
+    return { user: user.toObject(), isNew: true };
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+    await User.updateOne({ telegramId }, { $set: userData });
+    return { user: await User.findOne({ telegramId }).lean(), isNew: false };
+  }
+}
+
+async function notifyNewSubscriber(ctx) {
+  if (isAdmin(ctx)) return;
+  const count = await User.countDocuments();
+  const nickname = escapeHtml(ctx.from.first_name || ctx.from.last_name || ctx.from.username || 'foydalanuvchi');
+  const profileLink = `<a href="tg://user?id=${Number(ctx.from.id)}">${nickname}</a>`;
+  await bot.telegram.sendMessage(
+    ADMIN_TG_ID,
+    `Botga yangi obunachi qo'shildi: ${profileLink}\nObunachilar soni: ${count}`,
+    { parse_mode: 'HTML' }
+  );
 }
 
 function movieCaption(movie, views, includeViews = true) {
@@ -305,7 +338,7 @@ async function sendMovie(ctx, code) {
   if (!movie) return ctx.reply(configuredMessage('invalidCode', ctx, { code: normalizedCode }), replyOptions());
   const channel = data.settings.movieChannel;
   const buttonRows = channel?.username
-    ? [[Markup.button.url('🎞 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
+    ? [[Markup.button.url('<tg-emoji emoji-id="5465267273373588836">📺</tg-emoji> Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
   return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
     caption: movieCaption(movie, movie.views),
@@ -501,7 +534,14 @@ function movieEditKeyboard(code) {
 }
 
 async function handleStart(ctx) {
-  await ensureUser(ctx);
+  const registration = await ensureUser(ctx);
+  if (registration.isNew) {
+    try {
+      await notifyNewSubscriber(ctx);
+    } catch (error) {
+      console.error('New subscriber notification failed:', error.response?.description || error.message);
+    }
+  }
   if (!(await requiredSubscription(ctx))) return;
   const payload = ctx.startPayload || '';
   if (payload.startsWith('movie_')) return sendMovie(ctx, payload.slice(6));
