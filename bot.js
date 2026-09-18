@@ -404,7 +404,6 @@ async function downloadMusicMp3(result) {
         '--cookies', cookiesPath,
         '--no-playlist',
         '--ignore-config',
-        '--format', 'bestaudio/bestvideo+bestaudio/best',
         '--ignore-errors',
         '--extract-audio',
         '--audio-format', 'mp3',
