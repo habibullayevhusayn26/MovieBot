@@ -4,7 +4,12 @@ process.env.TZ = config.timezone;
 
 const mongoose = require('mongoose');
 const express = require('express');
-const { Telegraf, Markup, session } = require('telegraf');
+const { Telegraf, Markup, session, Input } = require('telegraf');
+const fs = require('fs/promises');
+const fsSync = require('fs');
+const os = require('os');
+const path = require('path');
+const archiver = require('archiver');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -86,11 +91,6 @@ const defaultMessages = {
   nonNumericCode: 'Kino kodi faqat raqam bo\'lishi kerak. Qayta yuboring.',
   help: `${premiumEmojis.web} Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.`
 };
-const legacyButtonLabels = new Set([
-  '📨 Post yuborish', '🎬 Video saqlash', '📢 Kanallar ro\'yxati', '➕ Kanal qo\'shish',
-  '📊 Post statistikasi', '👤 Profilim', '💎 Premium', 'Sozlamalar', '🛠 Admin panel'
-]);
-
 function isAdmin(ctx) {
   return Number(ctx.from?.id) === ADMIN_TG_ID || ctx.from?.username?.toLowerCase() === ADMIN_USERNAME;
 }
@@ -131,6 +131,7 @@ function adminKeyboard() {
       Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list'),
       Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
     ],
+    [Markup.button.callback('📦 Bot kodini ZIP qilib olish', 'admin:download_code')],
     [Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]
   ]);
 }
@@ -246,6 +247,46 @@ async function saveSettings() {
     { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, messages: data.settings.messages } } },
     { upsert: true }
   );
+}
+
+async function createBotArchive() {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-bot-export-'));
+  const archivePath = path.join(tempDir, 'kino-bot-source.zip');
+  const projectRoot = __dirname;
+  const files = [
+    'bot.js', 'config.js', 'package.json', 'package-lock.json',
+    'README.md', '.env.example', 'data.json', 'index.html'
+  ];
+
+  try {
+    await new Promise((resolve, reject) => {
+      const output = fsSync.createWriteStream(archivePath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      output.on('close', () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      });
+      output.on('error', fail);
+      archive.on('error', fail);
+      archive.pipe(output);
+      for (const file of files) {
+        const filePath = path.join(projectRoot, file);
+        if (fsSync.existsSync(filePath)) archive.file(filePath, { name: file });
+      }
+      archive.finalize().catch(fail);
+    });
+    return { archivePath, tempDir };
+  } catch (error) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function hydrateSettings() {
@@ -560,6 +601,27 @@ bot.action('admin:exit', async (ctx) => {
   return ctx.reply('Admin paneldan chiqildi.', userKeyboard(ctx));
 });
 
+bot.action('admin:download_code', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  let archiveFile;
+  try {
+    await ctx.reply('Bot kodi ZIP faylga tayyorlanmoqda...');
+    archiveFile = await createBotArchive();
+    await ctx.telegram.sendDocument(ctx.chat.id, Input.fromLocalFile(archiveFile.archivePath), {
+      caption: 'Botning joriy kod versiyasi.'
+    });
+  } catch (error) {
+    console.error('Bot archive creation failed:', error.message);
+    return ctx.reply('ZIP faylni tayyorlashda xatolik yuz berdi. Qaytadan urinib ko\'ring.');
+  } finally {
+    if (archiveFile?.tempDir) {
+      await fs.rm(archiveFile.tempDir, { recursive: true, force: true });
+    }
+  }
+  return ctx.reply('Kod ZIP fayl ko\'rinishida yuborildi.', adminKeyboard());
+});
+
 bot.action('admin:find_movie', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -821,10 +883,6 @@ bot.on('text', async (ctx) => {
     ctx.session.step = 'broadcast_button_color';
     return ctx.reply('Tugma rangini tanlang:', broadcastColorKeyboard());
   }
-  if (legacyButtonLabels.has(value)) {
-    reset(ctx);
-    return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
-  }
   if (step === 'find_movie') {
     if (!/^\d+$/.test(value)) return ctx.reply(configuredMessage('nonNumericCode', ctx, { code: value }), replyOptions());
     const movie = await Movie.findOne({ code: value }).lean();
@@ -906,7 +964,6 @@ bot.on('text', async (ctx) => {
 bot.on('callback_query', async (ctx) => {
   await safeAnswerCbQuery(ctx);
   reset(ctx);
-  return ctx.reply(isAdmin(ctx) ? 'Bu tugma eskirgan. Admin paneldan kerakli bo\'limni qayta tanlang.' : 'Bu tugma eskirgan. Kino kodini yuboring.');
 });
 
 bot.catch(async (error, ctx) => {
