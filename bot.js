@@ -273,21 +273,25 @@ async function downloadMusicMp3(result) {
     await ytDlp.execPromise([
       videoUrl,
       '--no-playlist',
-      '-f', 'bestaudio/best',
+      '--extractor-args', 'youtube:player_client=android,web',
+      '-f', 'bestaudio[ext=m4a]/bestaudio/best',
       '-x',
       '--audio-format', 'mp3',
-      '--audio-quality', '0',
+      '--audio-quality', '5',
+      '--concurrent-fragments', '4',
       '--ffmpeg-location', ffmpegPath,
       '-o', outputTemplate,
       '--no-warnings',
       '--no-progress'
     ]);
+    if (!fsSync.existsSync(outputPath)) throw new Error('MP3 fayli yaratilmadi.');
     const title = result.title || 'Noma\'lum musiqa';
     const artist = result.artist || 'Noma\'lum artist';
     const tagResult = NodeID3.write({ title, artist, album: 'KinoManiaBot' }, outputPath);
     if (tagResult !== true) throw new Error('MP3 metadata yozilmadi.');
     return { filePath: outputPath, tempDir, title, artist };
   } catch (error) {
+    console.error('yt-dlp error:', error.message);
     await fs.rm(tempDir, { recursive: true, force: true });
     throw error;
   }
@@ -1370,6 +1374,7 @@ async function safeAnswerCbQuery(ctx) {
 async function startBot() {
   await hydrateSettings();
   await bot.launch();
+  getYtDlp().catch((error) => console.error('yt-dlp prepare failed:', error.message));
   console.log('Movie bot ishga tushdi.');
 }
 
