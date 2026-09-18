@@ -8,7 +8,6 @@ const { Telegraf, Markup, session, Input } = require('telegraf');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const sharp = require('sharp');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -75,7 +74,7 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const ADMIN_TG_ID = config.admin.telegramId;
-const data = { settings: { requiredChannels: [], movieChannel: null, moviePreviewFileId: null } };
+const data = { settings: { requiredChannels: [], movieChannel: null } };
 const premiumEmojis = {
   welcome: '<tg-emoji emoji-id="5199785165735367039">⚡️</tg-emoji>',
   bot: '<tg-emoji emoji-id="5323359973365784232">🤖</tg-emoji>',
@@ -138,7 +137,6 @@ function adminKeyboard() {
       Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list'),
       Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
     ],
-    [Markup.button.callback('🖼 Kino preview rasmini sozlash', 'admin:movie_preview')],
     [Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]
   ]);
 }
@@ -251,7 +249,7 @@ async function checkFullAdmin(ctx, username) {
 async function saveSettings() {
   await BotConfig.findOneAndUpdate(
     { configKey: 'main_config' },
-    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, moviePreviewFileId: data.settings.moviePreviewFileId, messages: data.settings.messages } } },
+    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, messages: data.settings.messages } } },
     { upsert: true }
   );
 }
@@ -265,7 +263,6 @@ async function hydrateSettings() {
   }
   data.settings.requiredChannels = configDocument.channels || [];
   data.settings.movieChannel = configDocument.settings?.movieChannel || null;
-  data.settings.moviePreviewFileId = configDocument.settings?.moviePreviewFileId || null;
   data.settings.messages = { ...defaultMessages };
 }
 
@@ -293,26 +290,6 @@ function movieLink(code) {
   return `https://t.me/${config.botUsername}?start=movie_${encodeURIComponent(code)}`;
 }
 
-async function prepareMoviePreview(telegram, fileId) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-preview-'));
-  const sourcePath = path.join(tempDir, 'source');
-  const previewPath = path.join(tempDir, 'preview.jpg');
-  try {
-    const fileUrl = await telegram.getFileLink(fileId);
-    const response = await fetch(fileUrl);
-    if (!response.ok) throw new Error(`Preview download failed: ${response.status}`);
-    await fs.writeFile(sourcePath, Buffer.from(await response.arrayBuffer()));
-    await sharp(sourcePath)
-      .resize({ width: 320, height: 320, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 80, mozjpeg: true })
-      .toFile(previewPath);
-    return { previewPath, tempDir };
-  } catch (error) {
-    await fs.rm(tempDir, { recursive: true, force: true });
-    throw error;
-  }
-}
-
 async function sendMovie(ctx, code) {
   const normalizedCode = String(code || '').trim();
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -326,21 +303,11 @@ async function sendMovie(ctx, code) {
   const buttonRows = channel?.username
     ? [[Markup.button.url('🎞 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
-  let preview;
-  try {
-    const extra = {
-      caption: movieCaption(movie, movie.views),
-      parse_mode: 'HTML',
-      reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
-    };
-    if (data.settings.moviePreviewFileId) {
-      preview = await prepareMoviePreview(ctx.telegram, data.settings.moviePreviewFileId);
-      extra.thumb = Input.fromLocalFile(preview.previewPath);
-    }
-    return await ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, extra);
-  } finally {
-    if (preview?.tempDir) await fs.rm(preview.tempDir, { recursive: true, force: true });
-  }
+  return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
+    caption: movieCaption(movie, movie.views),
+    parse_mode: 'HTML',
+    reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
+  });
 }
 
 async function publishMovieAdvertisement(movie, replaceMedia = false) {
@@ -606,15 +573,6 @@ bot.action('admin:exit', async (ctx) => {
   return ctx.reply('Admin paneldan chiqildi.', userKeyboard(ctx));
 });
 
-bot.action('admin:movie_preview', async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  ctx.session = { step: 'movie_preview', adminPanelActive: true };
-  return ctx.reply(data.settings.moviePreviewFileId
-    ? 'Yangi preview rasmini yuboring. U mavjud rasm o\'rniga saqlanadi:'
-    : 'Barcha kinolar videolarida ko\'rinadigan preview rasmini yuboring:', replyOptions());
-});
-
 bot.action('admin:find_movie', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
@@ -809,12 +767,6 @@ bot.on('video', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
-  if (isAdmin(ctx) && ctx.session?.step === 'movie_preview') {
-    data.settings.moviePreviewFileId = ctx.message.photo.at(-1).file_id;
-    await saveSettings();
-    activateAdminPanel(ctx);
-    return ctx.reply('Kino preview rasmi saqlandi. Endi barcha kinolarda shu rasm ko\'rinadi.', adminKeyboard());
-  }
   if (isAdmin(ctx) && ctx.session?.step === 'broadcast_media') {
     ctx.session.broadcast.mediaType = 'photo';
     ctx.session.broadcast.media = ctx.message.photo.at(-1).file_id;
@@ -862,7 +814,7 @@ bot.on('text', async (ctx) => {
   }
   if (/^(?:Admin panel|🛠 Admin panel)$/.test(value)) {
     if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-    reset(ctx);
+    activateAdminPanel(ctx);
     return ctx.reply('Admin panel', adminKeyboard());
   }
   if (step === 'broadcast_caption') {
