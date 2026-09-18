@@ -9,7 +9,8 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
-const archiver = require('archiver');
+const { ZipArchive } = require('archiver');
+const sharp = require('sharp');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -76,7 +77,7 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const ADMIN_TG_ID = config.admin.telegramId;
-const data = { settings: { requiredChannels: [], movieChannel: null } };
+const data = { settings: { requiredChannels: [], movieChannel: null, moviePreviewFileId: null } };
 const premiumEmojis = {
   welcome: '<tg-emoji emoji-id="5199785165735367039">⚡️</tg-emoji>',
   bot: '<tg-emoji emoji-id="5323359973365784232">🤖</tg-emoji>',
@@ -97,6 +98,14 @@ function isAdmin(ctx) {
 
 function reset(ctx) {
   ctx.session = {};
+}
+
+function activateAdminPanel(ctx) {
+  ctx.session = { adminPanelActive: true };
+}
+
+function isAdminPanelActive(ctx) {
+  return isAdmin(ctx) && ctx.session?.adminPanelActive === true;
 }
 
 function normalizeChannel(value) {
@@ -132,6 +141,7 @@ function adminKeyboard() {
       Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
     ],
     [Markup.button.callback('📦 Bot kodini ZIP qilib olish', 'admin:download_code')],
+    [Markup.button.callback('🖼 Kino preview rasmini sozlash', 'admin:movie_preview')],
     [Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]
   ]);
 }
@@ -244,7 +254,7 @@ async function checkFullAdmin(ctx, username) {
 async function saveSettings() {
   await BotConfig.findOneAndUpdate(
     { configKey: 'main_config' },
-    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, messages: data.settings.messages } } },
+    { $set: { channels: data.settings.requiredChannels, settings: { movieChannel: data.settings.movieChannel, moviePreviewFileId: data.settings.moviePreviewFileId, messages: data.settings.messages } } },
     { upsert: true }
   );
 }
@@ -261,7 +271,7 @@ async function createBotArchive() {
   try {
     await new Promise((resolve, reject) => {
       const output = fsSync.createWriteStream(archivePath);
-      const archive = archiver('zip', { zlib: { level: 9 } });
+      const archive = new ZipArchive({ zlib: { level: 9 } });
       let settled = false;
       const fail = (error) => {
         if (settled) return;
@@ -298,6 +308,7 @@ async function hydrateSettings() {
   }
   data.settings.requiredChannels = configDocument.channels || [];
   data.settings.movieChannel = configDocument.settings?.movieChannel || null;
+  data.settings.moviePreviewFileId = configDocument.settings?.moviePreviewFileId || null;
   data.settings.messages = { ...defaultMessages };
 }
 
@@ -325,6 +336,26 @@ function movieLink(code) {
   return `https://t.me/${config.botUsername}?start=movie_${encodeURIComponent(code)}`;
 }
 
+async function prepareMoviePreview(telegram, fileId) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-preview-'));
+  const sourcePath = path.join(tempDir, 'source');
+  const previewPath = path.join(tempDir, 'preview.jpg');
+  try {
+    const fileUrl = await telegram.getFileLink(fileId);
+    const response = await fetch(fileUrl);
+    if (!response.ok) throw new Error(`Preview download failed: ${response.status}`);
+    await fs.writeFile(sourcePath, Buffer.from(await response.arrayBuffer()));
+    await sharp(sourcePath)
+      .resize({ width: 320, height: 320, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80, mozjpeg: true })
+      .toFile(previewPath);
+    return { previewPath, tempDir };
+  } catch (error) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function sendMovie(ctx, code) {
   const normalizedCode = String(code || '').trim();
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -338,11 +369,21 @@ async function sendMovie(ctx, code) {
   const buttonRows = channel?.username
     ? [[Markup.button.url('🎞 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
-  return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
-    caption: movieCaption(movie, movie.views),
-    parse_mode: 'HTML',
-    reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
-  });
+  let preview;
+  try {
+    const extra = {
+      caption: movieCaption(movie, movie.views),
+      parse_mode: 'HTML',
+      reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup
+    };
+    if (data.settings.moviePreviewFileId) {
+      preview = await prepareMoviePreview(ctx.telegram, data.settings.moviePreviewFileId);
+      extra.thumb = Input.fromLocalFile(preview.previewPath);
+    }
+    return await ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, extra);
+  } finally {
+    if (preview?.tempDir) await fs.rm(preview.tempDir, { recursive: true, force: true });
+  }
 }
 
 async function publishMovieAdvertisement(movie, replaceMedia = false) {
@@ -551,6 +592,12 @@ bot.start(handleStart);
 bot.use(async (ctx, next) => {
   if (ctx.from && ctx.message?.text !== '/start') await ensureUser(ctx);
   if (ctx.callbackQuery?.data === 'check_subscription') return next();
+  if (ctx.callbackQuery?.data && isAdmin(ctx) &&
+      /^(?:admin:|broadcast:)/.test(ctx.callbackQuery.data) &&
+      ctx.callbackQuery.data !== 'admin:panel' && !isAdminPanelActive(ctx)) {
+    await ctx.answerCbQuery('Avval /admin orqali panelni oching.', { show_alert: true });
+    return;
+  }
   if (isAdmin(ctx)) return next();
   if (await requiredSubscription(ctx)) return next();
 });
@@ -567,12 +614,13 @@ bot.action('help', async (ctx) => {
 
 bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  activateAdminPanel(ctx);
   return ctx.reply('Admin panel', adminKeyboard());
 });
 
 bot.command('admin', (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  reset(ctx);
+  activateAdminPanel(ctx);
   return ctx.reply('Admin panel', adminKeyboard());
 });
 
@@ -585,7 +633,7 @@ bot.action('admin:stats', async (ctx) => {
 bot.action('admin:panel', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  reset(ctx);
+  activateAdminPanel(ctx);
   return ctx.reply('Admin panel', adminKeyboard());
 });
 
@@ -622,17 +670,26 @@ bot.action('admin:download_code', async (ctx) => {
   return ctx.reply('Kod ZIP fayl ko\'rinishida yuborildi.', adminKeyboard());
 });
 
+bot.action('admin:movie_preview', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
+  ctx.session = { step: 'movie_preview', adminPanelActive: true };
+  return ctx.reply(data.settings.moviePreviewFileId
+    ? 'Yangi preview rasmini yuboring. U mavjud rasm o\'rniga saqlanadi:'
+    : 'Barcha kinolar videolarida ko\'rinadigan preview rasmini yuboring:', replyOptions());
+});
+
 bot.action('admin:find_movie', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  ctx.session = { step: 'find_movie' };
+  ctx.session = { step: 'find_movie', adminPanelActive: true };
   return ctx.reply('<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji> Tahrirlash yoki o\'chirish uchun kino kodini yuboring:', replyOptions());
 });
 
 bot.action('admin:broadcast', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  ctx.session = { step: 'broadcast_media', broadcast: { buttons: [] } };
+  ctx.session = { step: 'broadcast_media', broadcast: { buttons: [] }, adminPanelActive: true };
   return ctx.reply('<tg-emoji emoji-id="5350693961281314631">🖼</tg-emoji> Xabar uchun rasm, video yoki GIF yuboring. Media shart emas:', replyOptions(broadcastKeyboard().reply_markup));
 });
 
@@ -706,7 +763,7 @@ bot.action(/^admin:edit_field:(title|code|genre|language|video|promo):(\d+)$/, a
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const [, field, code] = ctx.match;
   if (!await Movie.exists({ code })) return ctx.reply('Kino topilmadi.', adminKeyboard());
-  ctx.session = { step: `edit_movie_${field}`, movieCode: code };
+  ctx.session = { step: `edit_movie_${field}`, movieCode: code, adminPanelActive: true };
   const prompts = {
     title: 'Yangi kino nomini yuboring:',
     code: 'Yangi kino kodini yuboring:',
@@ -740,14 +797,14 @@ bot.action(/^admin:delete_confirm:(\d+)$/, async (ctx) => {
 bot.action('admin:movie_channel', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  ctx.session = { step: 'movie_channel' };
+  ctx.session = { step: 'movie_channel', adminPanelActive: true };
   return ctx.reply('<tg-emoji emoji-id="5352629724516458059">✈️</tg-emoji> Kino reklamasi tashlanadigan kanal username sini yuboring, masalan: @kino_kanal', replyOptions());
 });
 
 bot.action('admin:subscription', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
-  ctx.session = { step: 'required_subscription_channel' };
+  ctx.session = { step: 'required_subscription_channel', adminPanelActive: true };
   return ctx.reply('Majburiy obuna kanalining public username sini yuboring, masalan: @my_channel');
 });
 
@@ -771,7 +828,7 @@ bot.action('admin:add_movie', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   if (!data.settings.movieChannel) return ctx.reply('Avval kino reklama kanalini qo\'shing va botni unga admin qiling.', adminKeyboard());
-  ctx.session = { step: 'movie_title' };
+  ctx.session = { step: 'movie_title', adminPanelActive: true };
   return ctx.reply('<tg-emoji emoji-id="5375464961822695044">🎬</tg-emoji> Kino nomini yuboring:', replyOptions());
 });
 
@@ -816,6 +873,12 @@ bot.on('video', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
+  if (isAdmin(ctx) && ctx.session?.step === 'movie_preview') {
+    data.settings.moviePreviewFileId = ctx.message.photo.at(-1).file_id;
+    await saveSettings();
+    activateAdminPanel(ctx);
+    return ctx.reply('Kino preview rasmi saqlandi. Endi barcha kinolarda shu rasm ko\'rinadi.', adminKeyboard());
+  }
   if (isAdmin(ctx) && ctx.session?.step === 'broadcast_media') {
     ctx.session.broadcast.mediaType = 'photo';
     ctx.session.broadcast.media = ctx.message.photo.at(-1).file_id;
@@ -951,7 +1014,7 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Kino videosini yuboring:');
   }
   if (/^\d+$/.test(value)) {
-    if (isAdmin(ctx)) {
+    if (isAdminPanelActive(ctx)) {
       const movie = await Movie.findOne({ code: value }).lean();
       if (!movie) return ctx.reply('Kino topilmadi. Boshqa kod yuboring:', adminKeyboard());
       return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
