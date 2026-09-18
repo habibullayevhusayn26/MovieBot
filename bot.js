@@ -18,6 +18,15 @@ const userSchema = new mongoose.Schema({
   lastActiveAt: { type: Date, default: Date.now }
 }, { versionKey: false });
 
+const adminSchema = new mongoose.Schema({
+  telegramId: { type: Number, unique: true, required: true, index: true },
+  username: { type: String, default: '' },
+  nickname: { type: String, default: '' },
+  permissions: { type: [String], default: [] },
+  active: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+}, { versionKey: false });
+
 const movieSchema = new mongoose.Schema({
   code: { type: String, unique: true, required: true, index: true },
   title: { type: String, required: true },
@@ -47,6 +56,14 @@ const broadcastSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 }, { versionKey: false });
 
+const adminLogSchema = new mongoose.Schema({
+  adminTelegramId: { type: Number, required: true, index: true },
+  adminName: { type: String, default: '' },
+  action: { type: String, required: true },
+  details: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now, index: true }
+}, { versionKey: false });
+
 const botConfigSchema = new mongoose.Schema({
   configKey: { type: String, default: 'main_config', unique: true },
   channels: { type: Array, default: [] },
@@ -54,10 +71,12 @@ const botConfigSchema = new mongoose.Schema({
 }, { versionKey: false });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
+const Admin = mongoose.models.BotAdmin || mongoose.model('BotAdmin', adminSchema);
 const Movie = mongoose.models.Movie || mongoose.model('Movie', movieSchema);
 const BotConfig = mongoose.models.BotConfig || mongoose.model('BotConfig', botConfigSchema);
 const Session = mongoose.models.BotSession || mongoose.model('BotSession', sessionSchema);
 const Broadcast = mongoose.models.Broadcast || mongoose.model('Broadcast', broadcastSchema);
+const AdminLog = mongoose.models.AdminLog || mongoose.model('AdminLog', adminLogSchema);
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -71,6 +90,8 @@ app.listen(port, '0.0.0.0', () => console.log(`Express server ${port} portda ish
 const bot = new Telegraf(config.botToken);
 const ADMIN_USERNAME = config.admin.username;
 const ADMIN_TG_ID = config.admin.telegramId;
+const adminPermissions = ['movies', 'broadcast', 'stats', 'settings', 'admins'];
+const adminRegistry = new Map();
 const data = { settings: { requiredChannels: [], movieChannel: null } };
 const premiumEmojis = {
   welcome: '<tg-emoji emoji-id="5199785165735367039">⚡️</tg-emoji>',
@@ -87,7 +108,55 @@ const defaultMessages = {
   help: `${premiumEmojis.web} Kino kodini yuboring. Masalan: 1001. Bot sizga shu koddagi kinoni yuboradi.`
 };
 function isAdmin(ctx) {
+  const telegramId = Number(ctx.from?.id);
+  if (telegramId === ADMIN_TG_ID || ctx.from?.username?.toLowerCase() === ADMIN_USERNAME) return true;
+  const record = adminRegistry.get(telegramId);
+  return Boolean(record?.active);
+}
+
+function isOwner(ctx) {
   return Number(ctx.from?.id) === ADMIN_TG_ID || ctx.from?.username?.toLowerCase() === ADMIN_USERNAME;
+}
+
+function hasPermission(ctx, permission) {
+  if (isOwner(ctx)) return true;
+  const record = adminRegistry.get(Number(ctx.from?.id));
+  return Boolean(record?.active && record.permissions.includes(permission));
+}
+
+function permissionsLabel(permissions) {
+  const labels = { movies: 'Kinolar', broadcast: 'Xabar yuborish', stats: 'Statistika', settings: 'Sozlamalar', admins: 'Adminlar' };
+  return permissions.map((permission) => labels[permission] || permission).join(', ') || 'Huquq berilmagan';
+}
+
+function adminManagementKeyboard(admin) {
+  const rows = adminPermissions.map((permission) => [Markup.button.callback(
+    `${admin.permissions.includes(permission) ? '✅' : '⬜'} ${permission}`,
+    `admin:perm:${admin.telegramId}:${permission}`
+  )]);
+  rows.push([Markup.button.callback('🗑 Adminni o\'chirish', `admin:remove:${admin.telegramId}`)]);
+  rows.push([Markup.button.callback('⬅️ Adminlar ro\'yxati', 'admin:admins')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+async function refreshAdminRegistry() {
+  adminRegistry.clear();
+  const admins = await Admin.find({ active: true }).lean();
+  admins.forEach((admin) => adminRegistry.set(admin.telegramId, admin));
+}
+
+async function logAdminAction(ctx, action, details = '') {
+  if (!ctx.from?.id) return;
+  try {
+    await AdminLog.create({
+      adminTelegramId: Number(ctx.from.id),
+      adminName: ctx.from.first_name || ctx.from.username || '',
+      action,
+      details
+    });
+  } catch (error) {
+    console.error('Admin log failed:', error.message);
+  }
 }
 
 function reset(ctx) {
@@ -129,25 +198,31 @@ function isHttpUrl(value) {
 }
 
 function adminKeyboard() {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback('📊 Statistika', 'admin:stats'),
-      Markup.button.callback('🎬 Kino joylash', 'admin:add_movie')
-    ],
-    [
-      Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast'),
-      Markup.button.callback('📣 Kino reklama kanalini sozlash', 'admin:movie_channel')
-    ],
-    [
-      Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie'),
-      Markup.button.callback('📢 Majburiy obuna kanalini qo\'shish', 'admin:subscription')
-    ],
-    [
-      Markup.button.callback('📋 Majburiy obuna kanallari', 'admin:required_list'),
-      Markup.button.callback('❌ Majburiy obunani o\'chirish', 'admin:subscription_off')
-    ],
-    [Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]
+  const ctx = arguments[0];
+  const can = (permission) => !ctx || hasPermission(ctx, permission);
+  const rows = [];
+  if (can('stats')) rows.push([
+    Markup.button.callback('📊 Statistika', 'admin:stats')
   ]);
+  if (can('movies')) rows.push([
+    Markup.button.callback('🎬 Kino joylash', 'admin:add_movie'),
+    Markup.button.callback('🔎 Kino kodini qidirish', 'admin:find_movie')
+  ]);
+  if (can('broadcast')) rows.push([
+    Markup.button.callback('📣 Xabar yuborish', 'admin:broadcast')
+  ]);
+  if (can('settings')) rows.push([
+    Markup.button.callback('📣 Kino kanalini sozlash', 'admin:movie_channel'),
+    Markup.button.callback('📢 Obuna kanalini qo\'shish', 'admin:subscription')
+  ]);
+  if (can('settings')) rows.push([
+    Markup.button.callback('📋 Obuna kanallari', 'admin:required_list'),
+    Markup.button.callback('❌ Obunani o\'chirish', 'admin:subscription_off')
+  ]);
+  if (isOwner(ctx || {})) rows.push([Markup.button.callback('👥 Adminlarni boshqarish', 'admin:admins')]);
+  if (isOwner(ctx || {})) rows.push([Markup.button.callback('🧾 Admin loglari', 'admin:logs')]);
+  rows.push([Markup.button.callback('🚪 Paneldan chiqish', 'admin:exit')]);
+  return Markup.inlineKeyboard(rows);
 }
 
 function userKeyboard(ctx) {
@@ -200,6 +275,7 @@ function welcomeMarkup(ctx) {
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
+  rows.push([Markup.button.callback('🆕 So\'nggi kinolar', 'latest_movies')]);
   rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
   if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
   return Markup.inlineKeyboard(rows).reply_markup;
@@ -269,6 +345,9 @@ async function saveSettings() {
 
 async function hydrateSettings() {
   await mongoConnection;
+  const admins = await Admin.find({ active: true }).lean();
+  adminRegistry.clear();
+  admins.forEach((admin) => adminRegistry.set(admin.telegramId, admin));
   let configDocument = await BotConfig.findOne({ configKey: 'main_config' }).lean();
   if (!configDocument) {
     configDocument = await BotConfig.create({ configKey: 'main_config', channels: [], settings: {} });
@@ -342,12 +421,19 @@ async function sendMovie(ctx, code) {
   const buttonRows = channel?.username
     ? [[Markup.button.url('🎥 Kino kodlari kanali', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]]
     : [];
-  return ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
-    caption: movieCaption(movie, movie.views),
-    parse_mode: 'HTML',
-    reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup,
-    protect_content: shouldProtectContent(ctx.from.id)
-  });
+  const statusMessage = await ctx.reply('⏳ Kino tayyorlanmoqda...');
+  let sentMovie;
+  try {
+    sentMovie = await ctx.telegram.sendVideo(ctx.from.id, movie.videoFileId, {
+      caption: movieCaption(movie, movie.views),
+      parse_mode: 'HTML',
+      reply_markup: Markup.inlineKeyboard(buttonRows).reply_markup,
+      protect_content: shouldProtectContent(ctx.from.id)
+    });
+  } finally {
+    try { await ctx.telegram.deleteMessage(ctx.from.id, statusMessage.message_id); } catch {}
+  }
+  return sentMovie;
 }
 
 async function publishMovieAdvertisement(movie, replaceMedia = false) {
@@ -511,7 +597,7 @@ async function adminStats(ctx) {
     `<blockquote>Obunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}</blockquote>\n\n` +
     `<blockquote>Eng ko'p ko'rilganlar:\n${popularText}</blockquote>\n\n` +
     `<blockquote>Broadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}</blockquote>`,
-    replyOptions(adminKeyboard().reply_markup));
+    replyOptions(adminKeyboard(ctx).reply_markup));
 }
 
 function movieAdminKeyboard(code) {
@@ -581,6 +667,13 @@ bot.use(async (ctx, next) => {
     await ctx.answerCbQuery('Avval /admin orqali panelni oching.', { show_alert: true });
     return;
   }
+  if (ctx.callbackQuery?.data && isAdmin(ctx)) {
+    const permission = permissionForCallback(ctx.callbackQuery.data);
+    if (permission && !hasPermission(ctx, permission)) {
+      await ctx.answerCbQuery('Bu amal uchun sizda huquq yo\'q.', { show_alert: true });
+      return;
+    }
+  }
   if (isAdmin(ctx)) return next();
   if (await requiredSubscription(ctx)) return next();
 });
@@ -595,16 +688,41 @@ bot.action('help', async (ctx) => {
   return ctx.reply(configuredMessage('help', ctx), replyOptions());
 });
 
+bot.action('latest_movies', async (ctx) => {
+  await ctx.answerCbQuery();
+  const movies = await Movie.find({}, { title: 1, code: 1 })
+    .sort({ createdAt: -1 }).limit(10).lean();
+  if (!movies.length) return ctx.reply('Hali kino joylanmagan.');
+  const buttons = movies.map((movie) => [Markup.button.callback(
+    `🎬 ${movie.title} (${movie.code})`, `latest:movie:${movie.code}`
+  )]);
+  return ctx.reply('🆕 So\'nggi kinolar:', Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^latest:movie:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  return sendMovie(ctx, ctx.match[1]);
+});
+
+function permissionForCallback(callbackData) {
+  if (callbackData === 'admin:stats') return 'stats';
+  if (callbackData === 'admin:admins' || callbackData === 'admin:add' || callbackData === 'admin:logs' || callbackData.startsWith('admin:manage:') || callbackData.startsWith('admin:perm:') || callbackData.startsWith('admin:remove:')) return 'admins';
+  if (callbackData.startsWith('broadcast:')) return 'broadcast';
+  if (/^admin:(?:add_movie|find_movie|movie:|edit_movie:|edit_field:|delete_movie:|delete_confirm:)/.test(callbackData)) return 'movies';
+  if (/^admin:(?:movie_channel|subscription|required_list|subscription_off)/.test(callbackData)) return 'settings';
+  return null;
+}
+
 bot.hears(/^(?:Admin panel|🛠 Admin panel)$/, (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   activateAdminPanel(ctx);
-  return ctx.reply('Admin panel', adminKeyboard());
+  return ctx.reply('Admin panel', adminKeyboard(ctx));
 });
 
 bot.command('admin', (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   activateAdminPanel(ctx);
-  return ctx.reply('Admin panel', adminKeyboard());
+  return ctx.reply('Admin panel', adminKeyboard(ctx));
 });
 
 bot.action('admin:stats', async (ctx) => {
@@ -617,7 +735,7 @@ bot.action('admin:panel', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   activateAdminPanel(ctx);
-  return ctx.reply('Admin panel', adminKeyboard());
+  return ctx.reply('Admin panel', adminKeyboard(ctx));
 });
 
 bot.action('admin:exit', async (ctx) => {
@@ -630,6 +748,77 @@ bot.action('admin:exit', async (ctx) => {
     console.warn('Admin panel close failed:', error.response?.description || error.message);
   }
   return ctx.reply('Admin paneldan chiqildi.', userKeyboard(ctx));
+});
+
+bot.action('admin:admins', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  const admins = await Admin.find({ active: true }).sort({ createdAt: 1 }).lean();
+  const text = admins.length
+    ? admins.map((admin, index) => `${index + 1}. ${admin.nickname || admin.username || admin.telegramId} - ${permissionsLabel(admin.permissions)}`).join('\n')
+    : 'Hali qo\'shimcha adminlar yo\'q.';
+  const rows = admins.map((admin) => [Markup.button.callback(
+    `⚙️ ${admin.nickname || admin.username || admin.telegramId}`, `admin:manage:${admin.telegramId}`
+  )]);
+  rows.push([Markup.button.callback('➕ Admin qo\'shish', 'admin:add')]);
+  rows.push([Markup.button.callback('⬅️ Admin panel', 'admin:panel')]);
+  return ctx.reply(`👥 Adminlar\n\n${text}`, Markup.inlineKeyboard(rows));
+});
+
+bot.action('admin:logs', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  const logs = await AdminLog.find({}).sort({ createdAt: -1 }).limit(20).lean();
+  if (!logs.length) return ctx.reply('Hali admin amallari qayd etilmagan.', adminKeyboard(ctx));
+  const text = logs.map((log, index) => {
+    const date = new Date(log.createdAt).toLocaleString('uz-UZ', { timeZone: config.timezone });
+    return `${index + 1}. ${log.adminName || log.adminTelegramId}\n${log.action}${log.details ? ` - ${log.details}` : ''}\n${date}`;
+  }).join('\n\n');
+  return ctx.reply(`🧾 Oxirgi admin amallari\n\n${text}`, adminKeyboard(ctx));
+});
+
+bot.action('admin:add', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  ctx.session = { step: 'admin_add', adminPanelActive: true };
+  return ctx.reply('Qo\'shiladigan adminning Telegram ID raqamini yuboring:');
+});
+
+bot.action(/^admin:manage:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  const admin = await Admin.findOne({ telegramId: Number(ctx.match[1]), active: true }).lean();
+  if (!admin) return ctx.reply('Admin topilmadi.', adminKeyboard(ctx));
+  return ctx.reply(
+    `Admin: ${admin.nickname || admin.username || admin.telegramId}\nID: ${admin.telegramId}\nHuquqlar: ${permissionsLabel(admin.permissions)}`,
+    adminManagementKeyboard(admin)
+  );
+});
+
+bot.action(/^admin:perm:(\d+):(movies|broadcast|stats|settings|admins)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  const telegramId = Number(ctx.match[1]);
+  const permission = ctx.match[2];
+  const admin = await Admin.findOne({ telegramId, active: true });
+  if (!admin) return ctx.reply('Admin topilmadi.', adminKeyboard(ctx));
+  admin.permissions = admin.permissions.includes(permission)
+    ? admin.permissions.filter((item) => item !== permission)
+    : [...admin.permissions, permission];
+  await admin.save();
+  adminRegistry.set(telegramId, admin.toObject());
+  await logAdminAction(ctx, 'admin_permission_changed', `${telegramId}: ${permission}`);
+  return ctx.reply(`Huquq yangilandi.\n\nHuquqlar: ${permissionsLabel(admin.permissions)}`, adminManagementKeyboard(admin));
+});
+
+bot.action(/^admin:remove:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin bu bo\'limni boshqaradi.');
+  const telegramId = Number(ctx.match[1]);
+  await Admin.updateOne({ telegramId }, { $set: { active: false } });
+  adminRegistry.delete(telegramId);
+  await logAdminAction(ctx, 'admin_removed', String(telegramId));
+  return ctx.reply('Admin o\'chirildi.', adminKeyboard(ctx));
 });
 
 bot.action('admin:find_movie', async (ctx) => {
@@ -685,21 +874,22 @@ bot.action('broadcast:send', async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx) || !ctx.session?.broadcast?.previewed) return ctx.reply('Avval Preview tugmasini bosing.');
   const result = await sendBroadcast(ctx);
+  await logAdminAction(ctx, 'broadcast_sent', `total=${result.total}, sent=${result.sent}, failed=${result.failed}`);
   reset(ctx);
-  return ctx.reply(`Xabar yuborildi.\nJami: ${result.total}\nYetib bordi: ${result.sent}\nBloklagan: ${result.blocked}\nXatolik: ${result.failed}`, adminKeyboard());
+  return ctx.reply(`Xabar yuborildi.\nJami: ${result.total}\nYetib bordi: ${result.sent}\nBloklagan: ${result.blocked}\nXatolik: ${result.failed}`, adminKeyboard(ctx));
 });
 
 bot.action('broadcast:cancel', async (ctx) => {
   await ctx.answerCbQuery();
   reset(ctx);
-  return ctx.reply('Xabar yuborish bekor qilindi.', adminKeyboard());
+  return ctx.reply('Xabar yuborish bekor qilindi.', adminKeyboard(ctx));
 });
 
 bot.action(/^admin:movie:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
-  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard(ctx));
   return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
 });
 
@@ -707,7 +897,7 @@ bot.action(/^admin:edit_movie:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
-  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard(ctx));
   return ctx.reply('Qaysi ma\'lumotni o\'zgartirasiz?', movieEditKeyboard(movie.code));
 });
 
@@ -715,7 +905,7 @@ bot.action(/^admin:edit_field:(title|code|genre|language|video|promo):(\d+)$/, a
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const [, field, code] = ctx.match;
-  if (!await Movie.exists({ code })) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  if (!await Movie.exists({ code })) return ctx.reply('Kino topilmadi.', adminKeyboard(ctx));
   ctx.session = { step: `edit_movie_${field}`, movieCode: code, adminPanelActive: true };
   const prompts = {
     title: 'Yangi kino nomini yuboring:',
@@ -732,7 +922,7 @@ bot.action(/^admin:delete_movie:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const movie = await Movie.findOne({ code: ctx.match[1] }).lean();
-  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard());
+  if (!movie) return ctx.reply('Kino topilmadi.', adminKeyboard(ctx));
   return ctx.reply(`${movie.title} filmini o\'chirishni tasdiqlaysizmi?`, Markup.inlineKeyboard([
     [Markup.button.callback('✅ Ha, o\'chirish', `admin:delete_confirm:${movie.code}`)],
     [Markup.button.callback('❌ Bekor qilish', `admin:movie:${movie.code}`)]
@@ -743,8 +933,9 @@ bot.action(/^admin:delete_confirm:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx)) return ctx.reply('Ruxsat yo\'q.');
   const result = await Movie.deleteOne({ code: ctx.match[1] });
+  if (result.deletedCount) await logAdminAction(ctx, 'movie_deleted', ctx.match[1]);
   reset(ctx);
-  return ctx.reply(result.deletedCount ? 'Kino o\'chirildi.' : 'Kino topilmadi.', adminKeyboard());
+  return ctx.reply(result.deletedCount ? 'Kino o\'chirildi.' : 'Kino topilmadi.', adminKeyboard(ctx));
 });
 
 bot.action('admin:movie_channel', async (ctx) => {
@@ -799,6 +990,7 @@ bot.on('video', async (ctx) => {
       { $set: { videoFileId: ctx.message.video.file_id } },
       { returnDocument: 'after' }
     ).lean();
+    if (movie) await logAdminAction(ctx, 'movie_video_updated', movie.code);
     reset(ctx);
     return ctx.reply(movie ? 'Kino videosi yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
@@ -809,6 +1001,7 @@ bot.on('video', async (ctx) => {
       { returnDocument: 'after' }
     ).lean();
     if (movie) await publishMovieAdvertisement(movie, true);
+    if (movie) await logAdminAction(ctx, 'movie_promo_updated', movie.code);
     reset(ctx);
     return ctx.reply(movie ? 'Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
@@ -839,6 +1032,7 @@ bot.on('photo', async (ctx) => {
       { returnDocument: 'after' }
     ).lean();
     if (movie) await publishMovieAdvertisement(movie, true);
+    if (movie) await logAdminAction(ctx, 'movie_promo_updated', movie.code);
     reset(ctx);
     return ctx.reply(movie ? 'Reklama media si yangilandi va kanalga yuborildi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
@@ -859,8 +1053,9 @@ bot.on('animation', async (ctx) => {
 async function finishMovieCreation(ctx) {
   const movie = await Movie.create(ctx.session.movie);
   await publishMovieAdvertisement(movie);
+  await logAdminAction(ctx, 'movie_created', `${movie.code}: ${movie.title}`);
   reset(ctx);
-  return ctx.reply(`Kino joylandi va ${data.settings.movieChannel.username} kanaliga reklama yuborildi.`, adminKeyboard());
+  return ctx.reply(`Kino joylandi va ${data.settings.movieChannel.username} kanaliga reklama yuborildi.`, adminKeyboard(ctx));
 }
 
 bot.on('text', async (ctx) => {
@@ -900,6 +1095,21 @@ bot.on('text', async (ctx) => {
     reset(ctx);
     return ctx.reply(movieAdminText(movie), movieAdminKeyboard(movie.code));
   }
+  if (step === 'admin_add') {
+    if (!isOwner(ctx)) return ctx.reply('Faqat asosiy admin yangi admin qo\'sha oladi.');
+    if (!/^\d+$/.test(value)) return ctx.reply('Telegram ID faqat raqamlardan iborat bo\'lishi kerak:');
+    const telegramId = Number(value);
+    if (telegramId === ADMIN_TG_ID) return ctx.reply('Asosiy adminni qayta qo\'shib bo\'lmaydi.');
+    const admin = await Admin.findOneAndUpdate(
+      { telegramId },
+      { $set: { active: true }, $setOnInsert: { telegramId, permissions: [] } },
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
+    ).lean();
+    adminRegistry.set(telegramId, admin);
+    await logAdminAction(ctx, 'admin_added', String(telegramId));
+    reset(ctx);
+    return ctx.reply(`Admin qo\'shildi: ${telegramId}. Endi uning huquqlarini belgilang.`, adminKeyboard(ctx));
+  }
   if (/^edit_movie_(title|code|genre|language)$/.test(step || '')) {
     const field = step.slice('edit_movie_'.length);
     if (field === 'code') {
@@ -912,6 +1122,7 @@ bot.on('text', async (ctx) => {
       { returnDocument: 'after' }
     ).lean();
     if (movie) await publishMovieAdvertisement(movie);
+    if (movie) await logAdminAction(ctx, 'movie_updated', `${movie.code}: ${field}`);
     reset(ctx);
     return ctx.reply(movie ? 'Kino ma\'lumoti yangilandi.' : 'Kino topilmadi.', movie ? movieAdminKeyboard(movie.code) : adminKeyboard());
   }
