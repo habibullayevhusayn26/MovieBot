@@ -403,6 +403,8 @@ async function downloadMusicMp3(result) {
         rawUrl,
         '--cookies', cookiesPath,
         '--no-playlist',
+        '--ignore-config',
+        '--format', 'bestaudio/best',
         '--extract-audio',
         '--audio-format', 'mp3',
         '--audio-quality', '192K',
