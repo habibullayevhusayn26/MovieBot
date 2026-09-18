@@ -242,20 +242,57 @@ function normalizeYouTubeSearchResult(item) {
   };
 }
 
-async function searchMusic(query) {
-  const key = config.youtubeApiKey;
-  if (!key) throw new Error('YouTube API kaliti sozlanmagan.');
+async function searchMusicJamendo(query) {
+  const params = new URLSearchParams({
+    client_id: process.env.JAMENDO_CLIENT_ID || config.youtubeApiKey,
+    format: 'json',
+    limit: '8',
+    namesearch: query,
+    audioformat: 'mp32'
+  });
 
-  const response = await fetchWithTimeout(buildYoutubeSearchUrl(query, key));
+  const response = await fetchWithTimeout(`https://api.jamendo.com/v3.0/tracks/?${params}`);
   if (!response.ok) {
-    const errorText = await response.text().catch(() => '');
-    throw new Error(`YouTube qidiruvi ishlamadi: ${errorText || response.statusText}`);
+    const reason = await response.text().catch(() => '');
+    throw new Error(`Jamendo qidiruvi ishlamadi: ${reason || response.statusText}`);
   }
 
   const payload = await response.json();
-  return (payload.items || [])
-    .filter((item) => item?.id?.videoId)
-    .map(normalizeYouTubeSearchResult);
+  return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
+    id: String(item.id),
+    title: item.name || 'Noma\'lum musiqa',
+    artist: item.artist_name || 'Noma\'lum artist',
+    duration: formatMusicDuration(item.duration),
+    downloadUrl: item.audiodownload
+  }));
+}
+
+async function searchMusic(query) {
+  try {
+    const key = config.youtubeApiKey;
+    if (!key) throw new Error('YouTube API kaliti sozlanmagan.');
+
+    const response = await fetchWithTimeout(buildYoutubeSearchUrl(query, key));
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      const combined = `${response.status} ${errorText || response.statusText}`;
+      if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(combined)) {
+        return searchMusicJamendo(query);
+      }
+      throw new Error(`YouTube qidiruvi ishlamadi: ${combined}`);
+    }
+
+    const payload = await response.json();
+    const items = (payload.items || []).filter((item) => item?.id?.videoId).map(normalizeYouTubeSearchResult);
+    if (!items.length) return searchMusicJamendo(query);
+    return items;
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
+      return searchMusicJamendo(query);
+    }
+    throw error;
+  }
 }
 
 function formatMusicDuration(value) {
@@ -839,6 +876,10 @@ async function replyMusicResults(ctx, query) {
     });
   } catch (error) {
     console.error('Music search failed:', error.message);
+    const message = String(error?.message || error || '');
+    if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
+      return ctx.reply('YouTube API limiti tugadi. Bir ozdan keyin qayta urinib ko\'ring yoki boshqa nom bilan qidiring.', replyOptions());
+    }
     return ctx.reply(error.message, replyOptions());
   }
 }
