@@ -270,24 +270,39 @@ async function downloadMusicMp3(result) {
   const videoUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
   try {
     const ytDlp = await getYtDlp();
-    await ytDlp.execPromise([
-      videoUrl,
-      '--no-playlist',
-      '--extractor-args', 'youtube:player_client=android,web',
-      '-f', 'bestaudio[ext=m4a]/bestaudio/best',
-      '-x',
-      '--audio-format', 'mp3',
-      '--audio-quality', '96K',
-      '--concurrent-fragments', '4',
-      '--retries', '3',
-      '--fragment-retries', '3',
-      '--socket-timeout', '30',
-      '--js-runtimes', 'node',
-      '--ffmpeg-location', ffmpegPath,
-      '-o', outputTemplate,
-      '--no-warnings',
-      '--no-progress'
-    ]);
+    const clientAttempts = ['android', 'web'];
+    let lastError;
+    for (const client of clientAttempts) {
+      try {
+        const args = [
+          videoUrl,
+          '--no-playlist',
+          '--extractor-args', `youtube:player_client=${client}`,
+          '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
+          '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+          '-x',
+          '--audio-format', 'mp3',
+          '--audio-quality', '96K',
+          '--concurrent-fragments', '4',
+          '--retries', '3',
+          '--fragment-retries', '3',
+          '--socket-timeout', '30',
+          '--js-runtimes', 'node',
+          '--ffmpeg-location', ffmpegPath,
+          '-o', outputTemplate,
+          '--no-warnings',
+          '--no-progress'
+        ];
+        if (config.youtubeCookiesFile) args.push('--cookies', config.youtubeCookiesFile);
+        await ytDlp.execPromise(args);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!/403|forbidden|sign.?in|confirm you.?re not a bot/i.test(String(error.message || error))) throw error;
+      }
+    }
+    if (lastError) throw lastError;
     const outputFiles = await fs.readdir(tempDir);
     const outputFile = outputFiles.find((file) => file.toLowerCase().endsWith('.mp3'));
     if (!outputFile) throw new Error('MP3 fayli yaratilmadi.');
@@ -298,8 +313,12 @@ async function downloadMusicMp3(result) {
     if (tagResult !== true) throw new Error('MP3 metadata yozilmadi.');
     return { filePath: outputPath, tempDir, title, artist };
   } catch (error) {
-    console.error('yt-dlp error:', error.message);
-    await fs.rm(tempDir, { recursive: true, force: true });
+    console.error("DETAILED_RUNTIME_ERROR:", error);
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.error('MUSIC_CLEANUP_ERROR:', cleanupError);
+    }
     throw error;
   }
 }
@@ -851,11 +870,21 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
       protect_content: shouldProtectContent(ctx.from.id)
     });
   } catch (error) {
-    console.error('Music MP3 conversion failed:', error.message);
+    console.error("DETAILED_RUNTIME_ERROR:", error);
     return ctx.reply('Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.');
   } finally {
-    try { await ctx.telegram.deleteMessage(ctx.from.id, status.message_id); } catch {}
-    if (music?.tempDir) await fs.rm(music.tempDir, { recursive: true, force: true });
+    try {
+      await ctx.telegram.deleteMessage(ctx.from.id, status.message_id);
+    } catch (cleanupError) {
+      console.error('STATUS_MESSAGE_CLEANUP_ERROR:', cleanupError);
+    }
+    if (music?.tempDir) {
+      try {
+        await fs.rm(music.tempDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        console.error('MUSIC_FILE_CLEANUP_ERROR:', cleanupError);
+      }
+    }
   }
   return ctx.reply('✅ Musiqa yuborildi.');
 });
