@@ -371,80 +371,39 @@ async function downloadMusicMp3(result) {
     const rawUrl = String(result?.downloadUrl || '');
     const title = result?.title || 'Noma\'lum musiqa';
     const artist = result?.artist || 'Noma\'lum artist';
-    const renderCookiesPath = '/etc/secrets/cookies.txt';
-    const localCookiesPath = path.join(process.cwd(), 'cookies.txt');
-    const cookiesPath = fsSync.existsSync(renderCookiesPath)
-      ? renderCookiesPath
-      : localCookiesPath;
 
     if (isYoutubeUrl(rawUrl)) {
-      if (!fsSync.existsSync(cookiesPath)) {
-        throw new Error(`YouTube cookies.txt topilmadi: ${cookiesPath}`);
+      const axios = require('axios');
+      const cobaltResponse = await axios.post('https://cobalt.tools', {
+        url: rawUrl,
+        downloadMode: 'audio',
+        audioFormat: 'mp3',
+        audioBitrate: '192',
+        youtubeVideoCodec: 'h264'
+      }, {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        timeout: 60000
+      });
+
+      const audioUrl = cobaltResponse.data?.url;
+      if (!isHttpUrl(audioUrl)) {
+        throw new Error('Cobalt audio download URL qaytarmadi.');
       }
 
-      if (!ffmpeg) throw new Error('ffmpeg-static binary topilmadi.');
-
-      const cookies = (await fs.readFile(cookiesPath, 'utf8'))
-        .split(/\r?\n/)
-        .filter((line) => line && !line.startsWith('#'))
-        .map((line) => line.split('\t'))
-        .filter((fields) => fields.length >= 7 && fields[5] && fields[6])
-        .map((fields) => ({
-          key: fields[5],
-          value: fields[6],
-          domain: fields[0],
-          path: fields[2] || '/',
-          secure: fields[3].toUpperCase() === 'TRUE',
-          expires: fields[4] && fields[4] !== '0' ? Number(fields[4]) : 'Infinity'
-        }));
-
-      const ytstream = require('yt-stream');
-      const ytAgent = new ytstream.YTStreamAgent(cookies);
-      ytstream.setGlobalAgent(ytAgent);
-      const ytAudio = await ytstream.stream(rawUrl, {
-        type: 'audio',
-        quality: 'high',
-        download: true,
-        highWaterMark: 32 * 1024 * 1024
+      const audioResponse = await axios.get(audioUrl, {
+        responseType: 'stream',
+        timeout: 60000,
+        maxRedirects: 5
       });
-      const audioStream = ytAudio.stream;
-      const { spawn } = require('child_process');
-      const ffmpegProcess = spawn(ffmpeg, [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-i', 'pipe:0',
-        '-vn',
-        '-acodec', 'libmp3lame',
-        '-b:a', '192k',
-        '-f', 'mp3',
-        outputPath
-      ]);
-
+      const writer = fsSync.createWriteStream(outputPath);
       await new Promise((resolve, reject) => {
-        let settled = false;
-        let ffmpegError = '';
-        const fail = (error) => {
-          if (settled) return;
-          settled = true;
-          ffmpegProcess.kill('SIGKILL');
-          reject(error);
-        };
-
-        ffmpegProcess.stderr.setEncoding('utf8');
-        ffmpegProcess.stderr.on('data', (chunk) => { ffmpegError += chunk; });
-        audioStream.on('error', fail);
-        ffmpegProcess.stdin.on('error', fail);
-        ffmpegProcess.on('error', fail);
-        ffmpegProcess.on('close', (code) => {
-          if (settled) return;
-          if (code === 0) {
-            settled = true;
-            resolve();
-          } else {
-            fail(new Error(`ffmpeg MP3 conversion failed (${code}): ${ffmpegError.trim()}`));
-          }
-        });
-        audioStream.pipe(ffmpegProcess.stdin);
+        audioResponse.data.pipe(writer);
+        audioResponse.data.on('error', reject);
+        writer.on('finish', resolve);
+        writer.on('error', reject);
       });
     } else {
     const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
