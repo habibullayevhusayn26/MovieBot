@@ -374,18 +374,26 @@ async function downloadMusicMp3(result) {
 
     if (isYoutubeUrl(rawUrl)) {
       const axios = require('axios');
-      const cobaltResponse = await axios.post('https://cobalt.tools', {
-        url: rawUrl,
-        downloadMode: 'audio',
-        audioFormat: 'mp3',
-        audioBitrate: '192'
-      }, {
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        },
-        timeout: 60000
-      });
+      const cobaltApiUrl = process.env.COBALT_API_URL || 'https://api.cobalt.tools/';
+      let cobaltResponse;
+      try {
+        cobaltResponse = await axios.post(cobaltApiUrl, {
+          url: rawUrl,
+          downloadMode: 'audio',
+          audioFormat: 'mp3',
+          audioBitrate: '128'
+        }, {
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        });
+      } catch (error) {
+        const apiError = error.response?.data?.error;
+        const apiCode = apiError?.code || error.response?.data?.code || error.response?.status;
+        throw new Error(`Cobalt API xatosi (${apiCode || 'unknown'}): ${apiError?.context ? JSON.stringify(apiError.context) : error.message}`);
+      }
 
       const audioUrl = cobaltResponse.data?.url;
       if (!isHttpUrl(audioUrl)) {
