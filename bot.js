@@ -9,8 +9,6 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
-const { Readable } = require('stream');
-const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
 const ffmpeg = require('ffmpeg-static');
 
@@ -278,47 +276,20 @@ async function addYoutubeDurations(items, key) {
   }
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function searchMusicJamendo(query) {
-  const clientId = String(process.env.JAMENDO_CLIENT_ID || '').trim();
-  if (!clientId) {
-    throw new Error('Jamendo ishlashi uchun JAMENDO_CLIENT_ID sozlanmagan.');
-  }
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    format: 'json',
-    limit: '10',
-    namesearch: query,
-    audioformat: 'mp32'
-  });
-
-  const response = await fetchWithTimeout(`https://api.jamendo.com/v3.0/tracks/?${params}`);
+async function searchMusic(query) {
+  const key = config.youtubeApiKey;
+  const response = await fetchWithTimeout(buildYoutubeSearchUrl(query, key));
   if (!response.ok) {
     const reason = await response.text().catch(() => '');
-    throw new Error(`Jamendo qidiruvi ishlamadi: ${reason || response.statusText}`);
+    throw new Error(`YouTube qidiruvi ishlamadi: ${reason || response.statusText}`);
   }
 
   const payload = await response.json();
-  if (payload.headers?.status === 'failed' || payload.headers?.code) {
-    throw new Error(`Jamendo API xatosi (${payload.headers.code}): ${payload.headers.error_message || 'noma\'lum xato'}`);
-  }
-
-  return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
-    id: String(item.id),
-    title: item.name || 'Noma\'lum musiqa',
-    artist: item.artist_name || 'Noma\'lum artist',
-    duration: formatMusicDuration(item.duration),
-    downloadUrl: item.audiodownload,
-    source: 'jamendo'
-  }));
-}
-
-async function searchMusic(query) {
-  return searchMusicJamendo(query);
+  const items = (payload.items || [])
+    .filter((item) => item?.id?.videoId)
+    .map(normalizeYouTubeSearchResult);
+  if (!items.length) return [];
+  return addYoutubeDurations(items, key);
 }
 
 function formatMusicDuration(value) {
@@ -336,19 +307,6 @@ function formatMusicDuration(value) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-async function downloadRemoteFileToPath(url, outputPath) {
-  if (!isHttpUrl(url)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
-
-  const response = await fetchWithTimeout(url, {}, 60000);
-  if (!response.ok || !response.body) throw new Error(`Musiqa fayli yuklab bo\'lmadi: HTTP ${response.status}`);
-  await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
-}
-
-// YouTube may reject anonymous cloud requests with HTTP 403. Export your active
-// browser session with a browser extension such as "Get cookies.txt LOCALLY",
-// save the clean Netscape-format export as cookies.txt in this project root,
-// and provision that file securely in Render before deploying. Never commit it
-// to GitHub: it contains an active YouTube session and is ignored by .gitignore.
 async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join('/tmp', 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
@@ -358,135 +316,57 @@ async function downloadMusicMp3(result) {
     const title = result?.title || 'Noma\'lum musiqa';
     const artist = result?.artist || 'Noma\'lum artist';
 
-    if (isYoutubeUrl(rawUrl)) {
-      const axios = require('axios');
-      const cobaltApiUrl = process.env.COBALT_API_URL || 'https://api.cobalt.tools/';
-      const cobaltHeaders = {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
+    if (!isYoutubeUrl(rawUrl)) {
+      throw new Error('Faqat YouTube musiqalari qo\'llab-quvvatlanadi.');
+    }
+
+    const ytstream = require('yt-stream');
+    const ytAudio = await ytstream.stream(rawUrl, {
+      type: 'audio',
+      quality: 'high',
+      download: true,
+      highWaterMark: 32 * 1024 * 1024
+    });
+    const audioStream = ytAudio.stream;
+    const { spawn } = require('child_process');
+    if (!ffmpeg) throw new Error('ffmpeg-static binary topilmadi.');
+    const ffmpegProcess = spawn(ffmpeg, [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-i', 'pipe:0',
+      '-vn',
+      '-acodec', 'libmp3lame',
+      '-b:a', '192k',
+      '-f', 'mp3',
+      outputPath
+    ]);
+
+    await new Promise((resolve, reject) => {
+      let ffmpegError = '';
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        ffmpegProcess.kill('SIGKILL');
+        reject(error);
       };
-      if (process.env.COBALT_API_KEY) {
-        cobaltHeaders.Authorization = `Api-Key ${process.env.COBALT_API_KEY}`;
-      } else if (process.env.COBALT_BEARER_TOKEN) {
-        cobaltHeaders.Authorization = `Bearer ${process.env.COBALT_BEARER_TOKEN}`;
-      }
-      let cobaltResponse;
-      try {
-        cobaltResponse = await axios.post(cobaltApiUrl, {
-          url: rawUrl,
-          downloadMode: 'audio',
-          audioFormat: 'mp3',
-          audioBitrate: '128'
-        }, {
-          headers: cobaltHeaders,
-          timeout: 60000
-        });
-      } catch (error) {
-        const apiError = error.response?.data?.error;
-        const apiCode = apiError?.code || error.response?.data?.code || error.response?.status;
-        throw new Error(`Cobalt API xatosi (${apiCode || 'unknown'}): ${apiError?.context ? JSON.stringify(apiError.context) : error.message}`);
-      }
 
-      const audioUrl = cobaltResponse.data?.url;
-      if (!isHttpUrl(audioUrl)) {
-        throw new Error('Cobalt audio download URL qaytarmadi.');
-      }
-
-      const audioResponse = await axios.get(audioUrl, {
-        responseType: 'stream',
-        timeout: 60000,
-        maxRedirects: 5
-      });
-      const writer = fsSync.createWriteStream(outputPath);
-      await new Promise((resolve, reject) => {
-        audioResponse.data.pipe(writer);
-        audioResponse.data.on('error', reject);
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-    } else {
-    const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
-    const preferAlternateSource = result?.source !== 'jamendo' && rawUrl && primaryProxyPattern.test(rawUrl);
-
-    let chosenUrl = rawUrl;
-    if (preferAlternateSource) {
-      const fallbackId = result?.videoId || result?.id || '';
-      const fallbackUrl = fallbackId ? `https://deezer.com/${fallbackId}` : `https://deezer.com/search/${encodeURIComponent(`${artist} ${title}`)}`;
-      chosenUrl = fallbackUrl;
-    }
-
-    let finalUrl = chosenUrl;
-    let finalHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      Accept: '*/*',
-      Referer: 'https://www.youtube.com/',
-      Origin: 'https://www.youtube.com'
-    };
-
-    if (preferAlternateSource) {
-      try {
-        const axios = require('axios');
-        const meta = await axios.get(fallbackUrl || chosenUrl, {
-          timeout: 20000,
-          headers: {
-            ...finalHeaders,
-            Accept: 'application/json,text/html,*/*'
-          }
-        });
-
-        const pageHtml = String(meta?.data || '');
-        const match = pageHtml.match(/https?:\/\/[^\s"']+\.mp3[^\s"']*/i) || pageHtml.match(/https?:\/\/[^\s"']+preview[^\s"']*/i);
-        if (match && match[0]) {
-          finalUrl = match[0];
-        }
-      } catch (metaError) {
-        console.warn('MUSIC_FALLBACK_METADATA_ERROR:', metaError.message || metaError);
-      }
-    }
-
-    if (!finalUrl || !/^https?:\/\//i.test(finalUrl)) {
-      throw new Error('Musiqa yuklash manzili topilmadi.');
-    }
-
-    try {
-      const axios = require('axios');
-      const response = await axios({
-        url: finalUrl,
-        method: 'GET',
-        responseType: 'stream',
-        timeout: 20000,
-        headers: finalHeaders,
-        maxRedirects: 5
-      });
-
-      const writer = fsSync.createWriteStream(outputPath);
-      await new Promise((resolve, reject) => {
-        response.data.pipe(writer);
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-    } catch (streamError) {
-      const statusText = String(streamError?.response?.status || streamError?.statusCode || streamError?.code || '');
-      if (/429|Too Many Requests|rate limit|quota/i.test(statusText + ' ' + String(streamError))) {
-        const fallbackDownloadUrl = rawUrl && !primaryProxyPattern.test(rawUrl) ? rawUrl : '';
-        if (fallbackDownloadUrl) {
-          const resp = await fetchWithTimeout(fallbackDownloadUrl, {
-            headers: finalHeaders
-          }, 20000);
-          if (resp.ok && resp.body) {
-            await pipeline(Readable.fromWeb(resp.body), fsSync.createWriteStream(outputPath));
-          } else {
-            throw new Error('Musiqa faylini yuklab bo\'lmadi: 429 fallback ham ishlamadi.');
-          }
+      ffmpegProcess.stderr.setEncoding('utf8');
+      ffmpegProcess.stderr.on('data', (chunk) => { ffmpegError += chunk; });
+      audioStream.on('error', fail);
+      ffmpegProcess.stdin.on('error', fail);
+      ffmpegProcess.on('error', fail);
+      ffmpegProcess.on('close', (code) => {
+        if (settled) return;
+        if (code === 0) {
+          settled = true;
+          resolve();
         } else {
-          throw new Error(`Status code: 429 (Too Many Requests)`);
+          fail(new Error(`ffmpeg MP3 conversion failed (${code}): ${ffmpegError.trim()}`));
         }
-      } else {
-        throw streamError;
-      }
-    }
-
-    }
+      });
+      audioStream.pipe(ffmpegProcess.stdin);
+    });
 
     const stats = await fs.stat(outputPath);
     if (!stats.size || stats.size < 1024) {
