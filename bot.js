@@ -507,7 +507,11 @@ async function adminStats(ctx) {
     ? popular.map((movie, index) => `${index + 1}. ${movie.title} (${movie.code}) - ${movie.views || 0}`).join('\n')
     : 'Hali kino ko\'rilmagan.';
   const broadcastStats = broadcasts[0] || { total: 0, sent: 0, failed: 0, blocked: 0 };
-  return ctx.reply(`<tg-emoji emoji-id="5244825199278311613">📊</tg-emoji> Bot statistikasi\n\nObunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}\n\nEng ko'p ko'rilganlar:\n${popularText}\n\nBroadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}`, replyOptions(adminKeyboard().reply_markup));
+  return ctx.reply(`<tg-emoji emoji-id="5244825199278311613">📊</tg-emoji> Bot statistikasi\n\n` +
+    `<blockquote>Obunachilar: ${subscribers}\nFaol userlar (24 soat): ${activeUsers}\nJoylangan kinolar: ${movies}\nUmumiy ko'rilgan kinolar: ${views[0]?.total || 0}</blockquote>\n\n` +
+    `<blockquote>Eng ko'p ko'rilganlar:\n${popularText}</blockquote>\n\n` +
+    `<blockquote>Broadcastlar: ${broadcastStats.total}\nYetib borgan: ${broadcastStats.sent}\nBloklagan: ${broadcastStats.blocked}\nXatolik: ${broadcastStats.failed}</blockquote>`,
+    replyOptions(adminKeyboard().reply_markup));
 }
 
 function movieAdminKeyboard(code) {
