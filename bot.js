@@ -359,6 +359,11 @@ async function downloadRemoteFileToPath(url, outputPath) {
   await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
 }
 
+// YouTube may reject anonymous cloud requests with HTTP 403. Export your active
+// browser session with a browser extension such as "Get cookies.txt LOCALLY",
+// save the clean Netscape-format export as cookies.txt in this project root,
+// and provision that file securely in Render before deploying. Never commit it
+// to GitHub: it contains an active YouTube session and is ignored by .gitignore.
 async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join('/tmp', 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
@@ -367,6 +372,31 @@ async function downloadMusicMp3(result) {
     const rawUrl = String(result?.downloadUrl || '');
     const title = result?.title || 'Noma\'lum musiqa';
     const artist = result?.artist || 'Noma\'lum artist';
+    const cookiesPath = path.join(process.cwd(), 'cookies.txt');
+
+    if (isYoutubeUrl(rawUrl)) {
+      const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
+      const ytDlp = new YTDlpWrap();
+      const ytDlpArgs = [
+        rawUrl,
+        '--cookies', cookiesPath,
+        '--no-playlist',
+        '--extract-audio',
+        '--audio-format', 'mp3',
+        '--audio-quality', '192K',
+        '--output', outputPath,
+        '--ffmpeg-location', ffmpeg,
+        '--no-part',
+        '--quiet',
+        '--no-warnings'
+      ];
+
+      if (!fsSync.existsSync(cookiesPath)) {
+        throw new Error(`YouTube cookies.txt topilmadi: ${cookiesPath}`);
+      }
+
+      await ytDlp.execPromise(ytDlpArgs);
+    } else {
     const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
     const preferAlternateSource = rawUrl && primaryProxyPattern.test(rawUrl);
 
@@ -446,6 +476,8 @@ async function downloadMusicMp3(result) {
       } else {
         throw streamError;
       }
+    }
+
     }
 
     const stats = await fs.stat(outputPath);
