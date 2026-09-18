@@ -217,7 +217,34 @@ async function searchMusic(query) {
   const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`);
   if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
   const payload = await response.json();
-  return payload.items || [];
+  const items = payload.items || [];
+  const ids = items.map((item) => item.id?.videoId).filter(Boolean);
+  if (!ids.length) return [];
+  const detailsParams = new URLSearchParams({
+    part: 'contentDetails',
+    id: ids.join(','),
+    key: config.youtubeApiKey
+  });
+  const detailsResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?${detailsParams}`);
+  const detailsPayload = detailsResponse.ok ? await detailsResponse.json() : { items: [] };
+  const durations = new Map((detailsPayload.items || []).map((item) => [
+    item.id,
+    formatMusicDuration(item.contentDetails?.duration)
+  ]));
+  return items.map((item) => ({
+    ...item,
+    duration: durations.get(item.id?.videoId) || ''
+  }));
+}
+
+function formatMusicDuration(value) {
+  const match = String(value || '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) return '';
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  if (hours) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 let ytDlpPromise;
@@ -771,14 +798,21 @@ async function replyMusicResults(ctx, query) {
     const results = items.map((item) => ({
       videoId: item.id?.videoId,
       title: item.snippet?.title || 'Noma\'lum musiqa',
-      artist: item.snippet?.channelTitle || 'Noma\'lum artist'
+      artist: item.snippet?.channelTitle || 'Noma\'lum artist',
+      duration: item.duration || ''
     })).filter((item) => item.videoId);
     ctx.session = { step: 'music_pick', musicResults: results };
-    const rows = results.map((result, index) => [Markup.button.callback(
-      `${index + 1}. ${result.title.slice(0, 55)}`,
-      `music:pick:${index}`
-    )]);
-    const list = results.map((result, index) => `${index + 1}. ${escapeHtml(result.title)} — ${escapeHtml(result.artist)}`).join('\n');
+    const rows = [];
+    for (let index = 0; index < results.length; index += 5) {
+      rows.push(results.slice(index, index + 5).map((result, offset) => Markup.button.callback(
+        String(index + offset + 1),
+        `music:pick:${index + offset}`
+      )));
+    }
+    const list = results.map((result, index) => {
+      const duration = result.duration ? ` ${result.duration}` : '';
+      return `${index + 1}. ${escapeHtml(result.artist)} - ${escapeHtml(result.title)}${duration}`;
+    }).join('\n');
     return ctx.reply(`<b>🎵 Qidiruv natijalari:</b>\n\n${list}\n\nRaqamini tanlang:`, {
       parse_mode: 'HTML',
       reply_markup: Markup.inlineKeyboard(rows).reply_markup
