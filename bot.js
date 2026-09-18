@@ -14,25 +14,6 @@ const { pipeline } = require('stream/promises');
 const NodeID3 = require('node-id3');
 const ytdl = require('@distube/ytdl-core');
 const ffmpeg = require('ffmpeg-static');
-const ytDlpBinaryPath = path.join('/tmp', 'yt-dlp');
-let ytDlpReadyPromise;
-
-async function getYtDlp() {
-  if (!ytDlpReadyPromise) {
-    ytDlpReadyPromise = (async () => {
-      const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
-      if (!fsSync.existsSync(ytDlpBinaryPath)) {
-        await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-      }
-      fsSync.chmodSync(ytDlpBinaryPath, 0o755);
-      return new YTDlpWrap(ytDlpBinaryPath);
-    })().catch((error) => {
-      ytDlpReadyPromise = undefined;
-      throw new Error(`yt-dlp ishga tushmadi: ${error.message || error}`);
-    });
-  }
-  return ytDlpReadyPromise;
-}
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -398,30 +379,68 @@ async function downloadMusicMp3(result) {
       : localCookiesPath;
 
     if (isYoutubeUrl(rawUrl)) {
-      const ytDlp = await getYtDlp();
-      const ytDlpArgs = [
-       rawUrl,
-  '--cookies', cookiesPath,
-  '--no-playlist',
-  '--ignore-config',
-  '--ignore-errors',
-  '--format', 'bestaudio/best', //  Faqat eng yaxshi audio formatni so'raymiz
-  '--extract-audio',
-  '--audio-format', 'mp3',
-  '--audio-quality', '192K',
-  '--output', outputPath,
-  '--ffmpeg-location', ffmpeg,
-  '--no-part',
-  '--quiet',
-  '--no-warnings'
-];
-
-
       if (!fsSync.existsSync(cookiesPath)) {
         throw new Error(`YouTube cookies.txt topilmadi: ${cookiesPath}`);
       }
 
-      await ytDlp.execPromise(ytDlpArgs);
+      if (!ffmpeg) throw new Error('ffmpeg-static binary topilmadi.');
+
+      const cookieHeader = (await fs.readFile(cookiesPath, 'utf8'))
+        .split(/\r?\n/)
+        .filter((line) => line && !line.startsWith('#'))
+        .map((line) => line.split('\t'))
+        .filter((fields) => fields.length >= 7 && fields[5] && fields[6])
+        .map((fields) => `${fields[5]}=${fields[6]}`)
+        .join('; ');
+
+      const audioStream = ytdl(rawUrl, {
+        quality: 'highestaudio',
+        requestOptions: {
+          headers: {
+            cookie: cookieHeader
+          }
+        }
+      });
+      const { spawn } = require('child_process');
+      const ffmpegProcess = spawn(ffmpeg, [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-i', 'pipe:0',
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-b:a', '192k',
+        '-f', 'mp3',
+        outputPath
+      ]);
+
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        let ffmpegError = '';
+        const fail = (error) => {
+          if (settled) return;
+          settled = true;
+          ffmpegProcess.kill('SIGKILL');
+          reject(error);
+        };
+
+        ffmpegProcess.stderr.setEncoding('utf8');
+        ffmpegProcess.stderr.on('data', (chunk) => { ffmpegError += chunk; });
+        audioStream.on('error', fail);
+        ffmpegProcess.stdin.on('error', fail);
+        ffmpegProcess.stdout.pipe(fsSync.createWriteStream(outputPath))
+          .on('error', fail);
+        ffmpegProcess.on('error', fail);
+        ffmpegProcess.on('close', (code) => {
+          if (settled) return;
+          if (code === 0) {
+            settled = true;
+            resolve();
+          } else {
+            fail(new Error(`ffmpeg MP3 conversion failed (${code}): ${ffmpegError.trim()}`));
+          }
+        });
+        audioStream.pipe(ffmpegProcess.stdin);
+      });
     } else {
     const primaryProxyPattern = /(proxy|mirror|cdn|download|audio|stream|mp3|api\.)/i;
     const preferAlternateSource = rawUrl && primaryProxyPattern.test(rawUrl);
