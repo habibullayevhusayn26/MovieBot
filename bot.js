@@ -206,6 +206,15 @@ function isHttpUrl(value) {
   }
 }
 
+function isYoutubeUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.hostname.includes('youtube.com') || url.hostname.includes('youtu.be');
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -310,25 +319,55 @@ function formatMusicDuration(value) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+async function downloadRemoteFileToPath(url, outputPath) {
+  if (!isHttpUrl(url)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
+
+  const response = await fetchWithTimeout(url, {}, 60000);
+  if (!response.ok || !response.body) throw new Error(`Musiqa fayli yuklab bo\'lmadi: HTTP ${response.status}`);
+  await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
+}
+
 async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
   try {
-    const videoId = result?.id || new URL(result?.downloadUrl || '').searchParams.get('v');
-    if (!videoId) throw new Error('YouTube video identifikatori topilmadi.');
+    if (isYoutubeUrl(result.downloadUrl)) {
+      try {
+        const videoId = result?.id || new URL(result.downloadUrl).searchParams.get('v');
+        if (!videoId) throw new Error('YouTube video identifikatori topilmadi.');
 
-    const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
-      filter: 'audioonly',
-      quality: 'highestaudio',
-      highWaterMark: 1 << 25,
-      requestOptions: {
-        headers: {
-          'User-Agent': 'Mozilla/5.0'
+        const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
+          filter: 'audioonly',
+          quality: 'highestaudio',
+          highWaterMark: 1 << 25,
+          requestOptions: {
+            headers: {
+              'User-Agent': 'Mozilla/5.0'
+            }
+          }
+        });
+
+        await pipeline(stream, fsSync.createWriteStream(outputPath));
+      } catch (error) {
+        const message = String(error?.message || error || '');
+        if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
+          const jamendoResults = await searchMusicJamendo(`${result.artist || ''} ${result.title || ''}`.trim());
+          const fallback = jamendoResults[0];
+          if (fallback?.downloadUrl) {
+            await downloadRemoteFileToPath(fallback.downloadUrl, outputPath);
+            return {
+              filePath: outputPath,
+              tempDir,
+              title: fallback.title || result.title,
+              artist: fallback.artist || result.artist
+            };
+          }
         }
+        throw error;
       }
-    });
-
-    await pipeline(stream, fsSync.createWriteStream(outputPath));
+    } else {
+      await downloadRemoteFileToPath(result.downloadUrl, outputPath);
+    }
 
     const stats = await fs.stat(outputPath);
     if (!stats.size || stats.size < 1024) throw new Error('Musiqa fayli yetarli emas yoki buzilgan.');
