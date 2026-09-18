@@ -186,9 +186,13 @@ function welcomeMessage(ctx) {
 function welcomeMarkup(ctx) {
   const channel = data.settings.movieChannel;
   const rows = [];
-  if (channel?.username) rows.push([Markup.button.url('🎞 Kino kodlari', `https://t.me/${String(channel.username).replace(/^@/, '')}`)]);
-  rows.push([Markup.button.callback('❓ Yordam', 'help')]);
-  if (isAdmin(ctx)) rows.push([Markup.button.callback('🛠 Admin panel', 'admin:panel')]);
+  if (channel?.username) rows.push([{
+    text: '🎞 Kino kodlari',
+    url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
+    style: 'primary'
+  }]);
+  rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
+  if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
   return Markup.inlineKeyboard(rows).reply_markup;
 }
 
