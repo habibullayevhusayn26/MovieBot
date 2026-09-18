@@ -372,7 +372,11 @@ async function downloadMusicMp3(result) {
     const rawUrl = String(result?.downloadUrl || '');
     const title = result?.title || 'Noma\'lum musiqa';
     const artist = result?.artist || 'Noma\'lum artist';
-    const cookiesPath = path.join(process.cwd(), 'cookies.txt');
+    const renderCookiesPath = '/etc/secrets/cookies.txt';
+    const localCookiesPath = path.join(process.cwd(), 'cookies.txt');
+    const cookiesPath = fsSync.existsSync(renderCookiesPath)
+      ? renderCookiesPath
+      : localCookiesPath;
 
     if (isYoutubeUrl(rawUrl)) {
       const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
