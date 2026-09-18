@@ -236,6 +236,15 @@ function buildYoutubeSearchUrl(query, key) {
   return `https://www.googleapis.com/youtube/v3/search?${params.toString()}`;
 }
 
+function buildYoutubeVideosUrl(ids, key) {
+  const params = new URLSearchParams({
+    part: 'contentDetails',
+    id: ids.join(','),
+    key
+  });
+  return `https://www.googleapis.com/youtube/v3/videos?${params.toString()}`;
+}
+
 function normalizeYouTubeSearchResult(item) {
   const videoId = item?.id?.videoId || item?.id || '';
   const title = item?.snippet?.title || 'Noma\'lum musiqa';
@@ -249,6 +258,25 @@ function normalizeYouTubeSearchResult(item) {
     thumbnail,
     downloadUrl: videoId ? `https://www.youtube.com/watch?v=${videoId}` : ''
   };
+}
+
+async function addYoutubeDurations(items, key) {
+  const ids = items.map((item) => item.id).filter(Boolean);
+  if (!ids.length) return items;
+
+  try {
+    const response = await fetchWithTimeout(buildYoutubeVideosUrl(ids, key));
+    if (!response.ok) return items;
+    const payload = await response.json();
+    const durations = new Map((payload.items || []).map((item) => [
+      String(item.id),
+      formatMusicDuration(item.contentDetails?.duration)
+    ]));
+    return items.map((item) => ({ ...item, duration: durations.get(item.id) || '' }));
+  } catch (error) {
+    console.warn('YouTube duration lookup failed:', error.message || error);
+    return items;
+  }
 }
 
 function delay(ms) {
@@ -298,7 +326,7 @@ async function searchMusic(query) {
     const payload = await response.json();
     const items = (payload.items || []).filter((item) => item?.id?.videoId).map(normalizeYouTubeSearchResult);
     if (!items.length) return searchMusicJamendo(query);
-    return items;
+    return addYoutubeDurations(items, key);
   } catch (error) {
     const message = String(error?.message || error || '');
     if (/429|Too Many Requests|quota|dailyLimitExceeded|rateLimitExceeded/i.test(message)) {
