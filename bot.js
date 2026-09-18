@@ -468,10 +468,13 @@ function welcomeMarkup(ctx) {
     url: `https://t.me/${String(channel.username).replace(/^@/, '')}`,
     style: 'primary'
   }]);
-  rows.push([{ text: '🎵 Musiqa qidirish (vaqtincha yopiq)', callback_data: 'music:search', style: 'success' }]);
-  rows.push([{ text: '🆕 So\'nggi kinolar', callback_data: 'latest_movies', style: 'danger' }]);
-  rows.push([{ text: '❓ Yordam', callback_data: 'help', style: 'success' }]);
-  if (isAdmin(ctx)) rows.push([{ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' }]);
+  rows.push([
+    { text: '🎵 Musiqa qidirish (vaqtincha yopiq)', callback_data: 'music:search', style: 'success' },
+    { text: '🆕 So\'nggi kinolar', callback_data: 'latest_movies', style: 'danger' }
+  ]);
+  const bottomRow = [{ text: '❓ Yordam', callback_data: 'help', style: 'success' }];
+  if (isAdmin(ctx)) bottomRow.push({ text: '🛠 Admin panel', callback_data: 'admin:panel', style: 'success' });
+  rows.push(bottomRow);
   return Markup.inlineKeyboard(rows).reply_markup;
 }
 
