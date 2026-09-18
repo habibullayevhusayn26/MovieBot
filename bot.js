@@ -1035,10 +1035,19 @@ bot.action(/^music:pick:(\d+)$/, async (ctx) => {
   } catch (error) {
     console.error('DETAILED_RUNTIME_ERROR:', error);
     const detail = isAdmin(ctx) ? `\n\nTexnik sabab: ${escapeHtml(String(error.message || error).slice(0, 900))}` : '';
-    const fallbackLink = result?.downloadUrl ? `\n\nMusiqa havolasi: ${escapeHtml(String(result.downloadUrl))}` : '';
+    const fallbackUrl = isHttpUrl(result?.downloadUrl) ? String(result.downloadUrl) : '';
     try {
-      await delay(3000);
-      await ctx.reply(`Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${fallbackLink}${detail}`, replyOptions());
+      const replyMarkup = fallbackUrl
+        ? Markup.inlineKeyboard([[{
+          text: '🎵 Musiqani ochish',
+          url: fallbackUrl,
+          style: 'success'
+        }]]).reply_markup
+        : undefined;
+      await ctx.reply(
+        `Bu musiqani MP3 qilib yuborib bo\'lmadi. Boshqa natijani tanlang.${detail}`,
+        replyOptions(replyMarkup)
+      );
     } catch (replyError) {
       console.error('FALLBACK_REPLY_ERROR:', replyError);
     }
