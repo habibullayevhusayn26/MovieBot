@@ -5,9 +5,6 @@ process.env.TZ = config.timezone;
 const mongoose = require('mongoose');
 const express = require('express');
 const { Telegraf, Markup, session, Input } = require('telegraf');
-const fs = require('fs/promises');
-const os = require('os');
-const path = require('path');
 
 const mongoConnection = mongoose.connect(config.mongoUri, {
   serverSelectionTimeoutMS: 10000
@@ -330,6 +327,7 @@ function movieCaption(movie, views, includeViews = true) {
 function movieLink(code) {
   return `https://t.me/${config.botUsername}?start=movie_${encodeURIComponent(code)}`;
 }
+
 
 async function sendMovie(ctx, code) {
   const normalizedCode = String(code || '').trim();
