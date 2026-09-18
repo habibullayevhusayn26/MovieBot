@@ -205,16 +205,22 @@ function isHttpUrl(value) {
 }
 
 async function searchMusic(query) {
-  const params = new URLSearchParams({ q: query, limit: '8' });
-  const response = await fetch(`https://api.deezer.com/search?${params}`);
+  const params = new URLSearchParams({
+    client_id: config.jamendoClientId,
+    format: 'json',
+    limit: '8',
+    namesearch: query,
+    audioformat: 'mp32'
+  });
+  const response = await fetch(`https://api.jamendo.com/v3.0/tracks/?${params}`);
   if (!response.ok) throw new Error('Musiqa qidiruvi vaqtincha ishlamayapti.');
   const payload = await response.json();
-  return (payload.data || []).filter((item) => item.preview).map((item) => ({
+  return (payload.results || []).filter((item) => item.audiodownload).map((item) => ({
     id: String(item.id),
-    title: item.title || 'Noma\'lum musiqa',
-    artist: item.artist?.name || 'Noma\'lum artist',
+    title: item.name || 'Noma\'lum musiqa',
+    artist: item.artist_name || 'Noma\'lum artist',
     duration: formatMusicDuration(item.duration),
-    previewUrl: item.preview
+    downloadUrl: item.audiodownload
   }));
 }
 
@@ -237,8 +243,8 @@ async function downloadMusicMp3(result) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kino-music-'));
   const outputPath = path.join(tempDir, 'music.mp3');
   try {
-    if (!isHttpUrl(result.previewUrl)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
-    const response = await fetch(result.previewUrl);
+    if (!isHttpUrl(result.downloadUrl)) throw new Error('Musiqa oqimi manzili noto\'g\'ri.');
+    const response = await fetch(result.downloadUrl);
     if (!response.ok || !response.body) throw new Error('Musiqa faylini yuklab bo\'lmadi.');
     await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(outputPath));
     const title = result.title || 'Noma\'lum musiqa';
@@ -764,7 +770,7 @@ async function replyMusicResults(ctx, query) {
       title: item.title,
       artist: item.artist,
       duration: item.duration,
-      previewUrl: item.previewUrl
+      downloadUrl: item.downloadUrl
     }));
     ctx.session = { step: 'music_pick', musicResults: results };
     const rows = [];

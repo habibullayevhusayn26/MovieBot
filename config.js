@@ -15,6 +15,7 @@ const botUsername = normalizeUsername(
 const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME);
 const adminTelegramId = Number(process.env.ADMIN_TG_ID);
 const mongoUri = process.env.MONGODB_URI;
+const jamendoClientId = String(process.env.JAMENDO_CLIENT_ID || '').trim();
 if (mongoUri) {
   const parsedMongoUri = new URL(mongoUri);
   if (!parsedMongoUri.searchParams.has('authSource')) {
@@ -26,6 +27,7 @@ if (mongoUri) {
 const missingSettings = [];
 if (!process.env.BOT_TOKEN) missingSettings.push('BOT_TOKEN');
 if (!process.env.MONGODB_URI) missingSettings.push('MONGODB_URI');
+if (!jamendoClientId) missingSettings.push('JAMENDO_CLIENT_ID');
 if (!botUsername) missingSettings.push('BOT_USERNAME');
 if (!adminUsername) missingSettings.push('ADMIN_USERNAME');
 if (!Number.isSafeInteger(adminTelegramId) || adminTelegramId <= 0) missingSettings.push('ADMIN_TG_ID');
@@ -36,6 +38,7 @@ if (missingSettings.length > 0) {
 module.exports = {
   botToken: process.env.BOT_TOKEN,
   mongoUri: process.env.MONGODB_URI,
+  jamendoClientId,
   botUsername,
   botLink: botUsername ? `https://t.me/${botUsername}` : '',
   admin: {
