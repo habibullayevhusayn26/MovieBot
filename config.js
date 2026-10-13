@@ -24,15 +24,21 @@ if (mongoUri) {
   process.env.MONGODB_URI = parsedMongoUri.toString();
 }
 
-const missingSettings = [];
-if (!process.env.BOT_TOKEN) missingSettings.push('BOT_TOKEN');
-if (!process.env.MONGODB_URI) missingSettings.push('MONGODB_URI');
-if (!youtubeApiKey) missingSettings.push('YOUTUBE_API_KEY');
-if (!botUsername) missingSettings.push('BOT_USERNAME');
-if (!adminUsername) missingSettings.push('ADMIN_USERNAME');
-if (!Number.isSafeInteger(adminTelegramId) || adminTelegramId <= 0) missingSettings.push('ADMIN_TG_ID');
-if (missingSettings.length > 0) {
-  throw new Error(`Missing configuration: ${missingSettings.join(', ')}. Update .env before starting the bot.`);
+function getMissingSettings() {
+  const missingSettings = [];
+  if (!process.env.BOT_TOKEN) missingSettings.push('BOT_TOKEN');
+  if (!process.env.MONGODB_URI) missingSettings.push('MONGODB_URI');
+  if (!botUsername) missingSettings.push('BOT_USERNAME');
+  if (!adminUsername) missingSettings.push('ADMIN_USERNAME');
+  if (!Number.isSafeInteger(adminTelegramId) || adminTelegramId <= 0) missingSettings.push('ADMIN_TG_ID');
+  return missingSettings;
+}
+
+function validateConfig() {
+  const missingSettings = getMissingSettings();
+  if (missingSettings.length > 0) {
+    throw new Error(`Missing configuration: ${missingSettings.join(', ')}. Update .env before starting the bot.`);
+  }
 }
 
 module.exports = {
@@ -46,5 +52,6 @@ module.exports = {
     publicUsername: adminUsername ? `@${adminUsername}` : '',
     telegramId: adminTelegramId
   },
-  timezone: process.env.BOT_TIMEZONE || 'Asia/Tashkent'
+  timezone: process.env.BOT_TIMEZONE || 'Asia/Tashkent',
+  validateConfig
 };
